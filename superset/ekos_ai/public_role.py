@@ -19,7 +19,8 @@ SQL_LAB_VIEWS = {"SQL Lab", "SQLLab", "Query", "SavedQuery", "TabStateView", "Ta
 def public_permissions(gamma: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """Gamma's (permission, view) pairs minus SQL Lab, plus Ask (AI). Pure."""
     keep = [(p, v) for p, v in gamma if v not in SQL_LAB_VIEWS and "sql_lab" not in p]
-    for pair in (("can_read", "EkosAI"), ("can_write", "EkosAI"), ("can_ask", "EkosAIView")):
+    for pair in (("can_read", "EkosAI"), ("can_write", "EkosAI"), ("can_ask", "EkosAIView"),
+                 ("menu_access", "Ask (AI)")):
         if pair not in keep:
             keep.append(pair)
     return keep
@@ -44,11 +45,15 @@ def main() -> None:  # pragma: no cover - runs against a real metadata database
         )
         database = os.environ.get("EKOS_AI_DATABASE", "")
         if database:
-            from superset.daos.database import DatabaseDAO
+            # Not DatabaseDAO: its lookup applies the signed-in user's access filter, and a
+            # start-up script has no user (it failed with AttributeError: user, 2026-11-08).
+            from superset.models.core import Database
 
-            found = DatabaseDAO.find_one_or_none(database_name=database)
+            found = db.session.query(Database).filter_by(database_name=database).one_or_none()
             if found is not None:
                 pairs.append(("database_access", found.perm))
+            else:
+                print(f"database {database!r} not found: the role gets no database access")
         for perm, view in pairs:
             pv = sm.find_permission_view_menu(perm, view) or sm.add_permission_view_menu(perm, view)
             if pv is not None and pv not in role.permissions:

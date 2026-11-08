@@ -35,6 +35,7 @@ def test_public_role_is_gamma_without_sql_lab_plus_ask():
     assert ("can_read", "Dashboard") in pairs and ("can_read", "Chart") in pairs
     assert ("menu_access", "SQL Lab") not in pairs and ("can_sql_lab", "Superset") not in pairs
     assert ("can_read", "EkosAI") in pairs and ("can_write", "EkosAI") in pairs
+    assert ("menu_access", "Ask (AI)") in pairs  # the page is in the menu, not only at its URL
 
 
 def test_admin_names():
