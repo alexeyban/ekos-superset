@@ -2,9 +2,10 @@
 {% block content %}
 <div class="container" style="max-width:960px">
   <h2>Ask your data</h2>
-  <p class="text-muted">Describe what you want to know. Questions become one checked, read-only
-  SELECT; dashboards are built from validated chart specs. The model sees table and column names,
-  never row values.</p>
+  <p class="text-muted">Describe what you want to know. Answers come from EKOS: the model sees
+  only the tables, columns, meanings and joins EKOS compiled (never row values), and every query
+  is checked by EKOS before it runs. Questions become one checked, read-only SELECT; dashboards
+  are built from validated chart specs.</p>
   <textarea id="q" class="form-control" rows="3" maxlength="600"
     placeholder="e.g. Total invoiced per business partner"></textarea>
   <p style="margin-top:10px">
@@ -32,6 +33,32 @@
       r.rows.forEach(function (row) { var tr = el("tr"); row.forEach(function (v) { tr.appendChild(el("td", v === null ? "" : v)); }); t.appendChild(tr); });
       out.appendChild(t);
     }
+    if (r.ekos) renderEkos(r.ekos);
+  }
+  function renderEkos(k) {
+    var box = el("div", undefined, "well well-sm");
+    box.appendChild(el("strong", "From EKOS"));
+    if (k.tables && k.tables.length) {
+      var ul = el("ul");
+      k.tables.forEach(function (t) {
+        var li = el("li"); li.appendChild(el("code", t.name));
+        if (t.description) li.appendChild(document.createTextNode(" — " + t.description));
+        var src = (t.evidence || []).join(", ");
+        if (t.ekos_id || src) li.appendChild(el("div", "ledger id " + (t.ekos_id || "?") + (src ? " · evidence " + src : ""), "text-muted small"));
+        ul.appendChild(li);
+      });
+      box.appendChild(ul);
+    }
+    if (k.joins && k.joins.length) {
+      box.appendChild(el("div", "Joins (EKOS foreign keys):"));
+      var uj = el("ul"); k.joins.forEach(function (j) { uj.appendChild(el("li", j.on)); }); box.appendChild(uj);
+    }
+    if (k.warnings && k.warnings.length) {
+      box.appendChild(el("div", "EKOS check warnings:", "text-warning"));
+      var uw = el("ul"); k.warnings.forEach(function (w) { uw.appendChild(el("li", w.code + ": " + w.message)); }); box.appendChild(uw);
+    }
+    if (k.note) box.appendChild(el("div", k.note, "text-muted small"));
+    out.appendChild(box);
   }
   async function go(kind) {
     var q = document.getElementById("q").value;
