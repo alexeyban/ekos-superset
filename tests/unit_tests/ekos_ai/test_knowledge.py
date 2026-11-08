@@ -111,3 +111,10 @@ def test_truncated_export_fetches_missing_allowed_tables():
     assert set(cat.tables) == {"store_sales", "item"}
     assert [a.get("match") for t, a in fake.calls] == [None, "item"]
     assert [j.right for j in cat.joins] == ["item"]
+
+
+def test_an_allow_list_is_asked_for_by_exact_names_in_one_call():
+    fake = FakeEkos()
+    knowledge.load(fake, allowed={"store_sales", "item"})
+    exports = [a for t, a in fake.calls if t == "ekos_ossie_export"]
+    assert len(exports) == 1 and exports[0]["names"] == ["item", "store_sales"]

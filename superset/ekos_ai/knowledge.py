@@ -275,13 +275,19 @@ def load(client: EkosClient, *, allowed: set[str] | None, database: str = "",
     args: dict[str, Any] = {"status": status, "max_datasets": MAX_DATASETS}
     if database:
         args["database"] = database
+    if allowed:
+        # EKOS 1.4.3+: exactly these tables in one call (an older EKOS ignores `names` and the
+        # per-table fallback below fills the gaps).
+        args["names"] = sorted(allowed)
     first = client.call("ekos_ossie_export", args, step="read the compiled schema")
     catalog = catalog_from_ossie(first, allowed)
     if catalog.truncated and allowed:
         # The export stopped at MAX_DATASETS: fetch each allowed table it left out, then build
         # one catalog from every answer so a join to a late table is kept.
         results = [first] + [
-            client.call("ekos_ossie_export", {**args, "match": name, "max_datasets": 20},
+            client.call("ekos_ossie_export",
+                        {**{a: v for a, v in args.items() if a != "names"}, "match": name,
+                         "max_datasets": 20},
                         step=f"read table {name}")
             for name in sorted(allowed - set(catalog.tables))
         ]
