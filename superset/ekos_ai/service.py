@@ -14,7 +14,7 @@ from typing import Any
 
 from flask import current_app, g
 
-from superset.ekos_ai import ekos_mcp, guard, knowledge, llm, planner
+from superset.ekos_ai import ekos_mcp, guard, knowledge, llm, planner, quota
 
 SQL_SYSTEM = """You write one {dialect} SELECT that answers a business question, from the schema
 EKOS compiled. Rules: use only the tables and columns listed under <schema>; join only on the
@@ -179,16 +179,69 @@ def draft_sql(ctx: Context, question: str, max_rows: int) -> dict:
     raise AssertionError("unreachable")
 
 
+def _spend_question() -> dict:
+    """One of today's questions for this person and for the instance (RFC 0250), before any
+    model is called; raises quota.LimitReached."""
+    from superset.extensions import db
+
+    user = getattr(g, "user", None)
+    key = f"u{getattr(user, 'id', None) or 'anon'}"
+    return quota.spend(
+        db.engine, key,
+        per_user=int(cfg("EKOS_AI_PER_USER_PER_DAY", 5)),
+        per_instance=int(cfg("EKOS_AI_PER_DAY", 50)),
+    )
+
+
+GENERATE_TOOL = "ekos_sql_generate"
+
+
+def generated_by_ekos(ctx: Context, question: str, max_rows: int) -> dict:
+    """RFC 0250: EKOS's own agent writes the SQL (`ekos_sql_generate`); Superset only applies its
+    read-only guard to it. The model's text never reaches the database unchecked."""
+    args: dict[str, Any] = {"question": question[:2000], "dialect": ctx.dialect}
+    if cfg("EKOS_MCP_DATABASE"):
+        args["database"] = cfg("EKOS_MCP_DATABASE")
+    result = ctx.client.call(GENERATE_TOOL, args)
+    status, sql = result.get("status"), result.get("sql")
+    if status == "limit":
+        return {"status": "failed", "explanation": str(result.get("reason", "EKOS's daily limit is reached."))[:300]}
+    if not sql:
+        return {"status": "impossible",
+                "explanation": "EKOS's SQL agent could not write a query for this question.",
+                "ekos": knowledge.grounding(ctx.catalog, tuple(ctx.names), None)}
+    try:
+        checked = guard.check_sql(sql, ctx.catalog.columns(),
+                                  dialect=_SQLGLOT.get(ctx.dialect, ctx.dialect), max_rows=max_rows)
+    except guard.Refused as err:
+        return {"status": "refused", "sql": str(sql)[:2000], "explanation": str(err)}
+    open_findings = [str(f) for f in result.get("open_findings") or []]
+    report = {
+        "note": str(result.get("checked", "")),
+        "findings": [{"code": f, "severity": "warn", "message": "still open on the final SQL"}
+                     for f in open_findings],
+    }
+    return {"status": "ok", "checked": checked, "report": report, "author": "ekos",
+            "explanation": "Written by EKOS's SQL agent from the compiled schema."
+                           + (f" Open findings: {', '.join(open_findings)}." if open_findings else "")}
+
+
 def text_to_sql(question: str) -> dict:
     ctx = Context(_client(), question)
     if not ctx.names:
         return _no_tables(ctx)
+    left = _spend_question()  # after EKOS answered, before any model call
     max_rows = int(cfg("EKOS_AI_MAX_ROWS", 200))
-    drafted = draft_sql(ctx, question, max_rows)
+    if GENERATE_TOOL in ctx.client.tools():
+        drafted = generated_by_ekos(ctx, question, max_rows)
+    else:
+        drafted = draft_sql(ctx, question, max_rows)
     if drafted["status"] != "ok":
-        return drafted
+        return {**drafted, "remaining": left}
     checked, report = drafted["checked"], drafted["report"]
     ekos = knowledge.grounding(ctx.catalog, checked.tables, report)
+    ekos["author"] = drafted.get("author", "model, checked by EKOS")
+    ekos["remaining"] = left
     database = _database()
     try:
         frame = _run(database, cfg("EKOS_AI_SCHEMA", "public"), checked.sql, max_rows)
@@ -202,6 +255,7 @@ def text_to_dashboard(question: str) -> dict:
     ctx = Context(_client(), question)
     if not ctx.names:
         return _no_tables(ctx)
+    left = _spend_question()  # after EKOS answered, before any model call
     proposal = _ask(DASH_SYSTEM, ctx.prompt(question), ctx.dialect)
     if proposal.get("status") != "ok":
         return _not_ok(proposal, ctx)
@@ -236,6 +290,8 @@ def text_to_dashboard(question: str) -> dict:
     result = _build(database, sch, proposal, prepared)
     ekos = knowledge.grounding(ctx.catalog, tuple(sorted(used)), None)
     ekos["warnings"] = warned
+    ekos["author"] = "model, checked by EKOS"
+    ekos["remaining"] = left
     return {**result, "ekos": ekos}
 
 

@@ -87,7 +87,7 @@ def test_load_is_cached_and_empty_is_unavailable():
     fake = FakeEkos()
     knowledge.load(fake, allowed=None)
     knowledge.load(fake, allowed=None)
-    assert fake.tools().count("ekos_ossie_export") == 1
+    assert fake.called().count("ekos_ossie_export") == 1
     empty = FakeEkos(ossie={"model": {"datasets": []}})
     empty.url = "fake://empty"  # the cache is per endpoint
     with pytest.raises(EkosUnavailable, match="no tables"):

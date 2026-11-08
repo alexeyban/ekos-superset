@@ -30,6 +30,7 @@ def wired(monkeypatch):
         monkeypatch.setattr(service.llm, "complete",
                             lambda system, user, **kw: prompts.append(user) or answers.pop(0))
         monkeypatch.setattr(service, "_database", lambda: object())
+        monkeypatch.setattr(service, "_spend_question", lambda: {"yours": 4, "everyone": 49})
         monkeypatch.setattr(service, "_run", lambda db, sch, sql, rows: ran.append(sql) or pd.DataFrame({"n": [3]}))
         return prompts, ran
     return install
@@ -110,3 +111,39 @@ def test_model_asking_back_carries_ekos_tables(app, wired):
     wired(ekos, [{"status": "needs_clarification", "question_back": "Which period?"}])
     r = service.text_to_sql("revenue per customer")
     assert r["status"] == "needs_clarification" and r["ekos"]["tables"]
+
+
+def test_ekos_writes_the_sql_when_it_offers_the_generator(app, wired):
+    ekos = FakeEkos(generated={"status": "ok", "sql": OK_SQL, "open_findings": [],
+                               "checked": "checked against pg, read-only"})
+    prompts, ran = wired(ekos, [])  # Superset's own model is never asked
+    r = service.text_to_sql("revenue per customer")
+    assert r["status"] == "ok" and prompts == []
+    assert ("ekos_sql_generate", {"question": "revenue per customer", "dialect": "postgres"}) in ekos.calls
+    assert r["ekos"]["author"] == "ekos" and r["ekos"]["note"] == "checked against pg, read-only"
+    assert r["ekos"]["remaining"] == {"yours": 4, "everyone": 49}
+    assert len(ran) == 1 and "LIMIT 200" in ran[0]
+
+
+def test_generated_sql_still_passes_the_read_only_guard(app, wired):
+    ekos = FakeEkos(generated={"status": "ok", "sql": "delete from customer"})
+    _, ran = wired(ekos, [])
+    r = service.text_to_sql("revenue per customer")
+    assert r["status"] == "refused" and ran == []
+
+
+def test_ekos_limit_and_no_sql_are_plain_answers(app, wired):
+    _, ran = wired(FakeEkos(generated={"status": "limit", "sql": None, "reason": "the daily limit of 50"}), [])
+    assert "daily limit of 50" in service.text_to_sql("revenue per customer")["explanation"]
+    _, ran = wired(FakeEkos(generated={"status": "no_sql", "sql": None}), [])
+    assert service.text_to_sql("revenue per customer")["status"] == "impossible" and ran == []
+
+
+def test_the_quota_is_spent_only_after_ekos_answered(app, wired, monkeypatch):
+    spent = []
+    ekos = FakeEkos(down=True)
+    wired(ekos, [])
+    monkeypatch.setattr(service, "_spend_question", lambda: spent.append(1) or {})
+    with pytest.raises(ekos_mcp.EkosUnavailable):
+        service.text_to_sql("revenue per customer")
+    assert spent == []

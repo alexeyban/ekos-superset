@@ -51,8 +51,10 @@ OSSIE = {
 class FakeEkos:
     url = "fake://ekos"
 
-    def __init__(self, check_reports=None, ossie=OSSIE, down=False):
+    def __init__(self, check_reports=None, ossie=OSSIE, down=False, generated=None):
         self.calls = []
+        # An `ekos_sql_generate` answer: listed (and returned) only when given (RFC 0250).
+        self.generated = generated
         self.check_reports = list(check_reports or [])
         self.ossie = ossie
         self.down = down
@@ -69,6 +71,9 @@ class FakeEkos:
             names = [d["name"] for d in self.ossie["model"]["datasets"]
                      if any(w in d["name"] or w in d.get("description", "").lower() for w in words)]
             return {"matches": [{"id": n, "name": n} for n in names]}
+        if tool == "ekos_sql_generate":
+            assert self.generated is not None, "not listed"
+            return self.generated
         if tool == "ekos_sql_check":
             if "sql" not in arguments:
                 return {"dialect_notes": ["Limit rows with LIMIT n."], "findings": []}
@@ -78,4 +83,11 @@ class FakeEkos:
         raise AssertionError(f"unexpected tool {tool}")
 
     def tools(self):
+        """What the endpoint lists, as EkosClient.tools()."""
+        if self.down:
+            raise EkosUnavailable("EKOS could not be reached.")
+        names = {"ekos_ossie_export", "ekos_search", "ekos_sql_check"}
+        return names | ({"ekos_sql_generate"} if self.generated is not None else set())
+
+    def called(self):
         return [t for t, _ in self.calls]

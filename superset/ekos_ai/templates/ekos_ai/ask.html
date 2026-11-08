@@ -38,6 +38,7 @@
   function renderEkos(k) {
     var box = el("div", undefined, "well well-sm");
     box.appendChild(el("strong", "From EKOS"));
+    if (k.author) box.appendChild(el("div", "SQL written by: " + (k.author === "ekos" ? "EKOS's SQL agent" : k.author), "text-muted small"));
     if (k.tables && k.tables.length) {
       var ul = el("ul");
       k.tables.forEach(function (t) {
@@ -58,6 +59,7 @@
       var uw = el("ul"); k.warnings.forEach(function (w) { uw.appendChild(el("li", w.code + ": " + w.message)); }); box.appendChild(uw);
     }
     if (k.note) box.appendChild(el("div", k.note, "text-muted small"));
+    if (k.remaining) box.appendChild(el("div", "Questions left today: " + k.remaining.yours + " (yours), " + k.remaining.everyone + " (everyone)", "text-muted small"));
     out.appendChild(box);
   }
   async function go(kind) {

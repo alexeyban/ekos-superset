@@ -18,8 +18,11 @@ For each question:
    synonyms and descriptions; tables joined by a foreign key to the best ones come along.
 3. **Engine rules.** `ekos_sql_check` with only `dialect` returns the engine's rules (row limits,
    integer division, quoting, dates). They go into the prompt.
-4. **The model proposes** SQL (or chart specs) from that schema only, as JSON. It sees names and
-   meanings, **never row values**.
+4. **SQL is written by EKOS** when the endpoint offers `ekos_sql_generate` (EKOS RFC 0250): EKOS's
+   own text-to-SQL agent, measured on BIRD, writes the query from the compiled schema and probes the
+   live database read-only; Superset only applies its guard and runs it. Otherwise (and for
+   dashboard charts) **the model proposes** SQL or chart specs from that schema only, as JSON. It
+   sees names and meanings, **never row values**.
 5. **Checks.** `guard.check_sql` (one read-only SELECT over EKOS's tables, no system schema, no
    file/sleep/dblink functions, a row limit), then `ekos_sql_check` against the compiled schema
    (unknown columns with the nearest real names, joins off the foreign keys, dialect mistakes).
@@ -50,16 +53,20 @@ columns. The person's text is delimited data (`<question>`, angle brackets remov
 | `EKOS_AI_MODEL`, `EKOS_AI_BASE_URL` | Anthropic Messages API |
 | `EKOS_AI_KEY_ENV` | name of the environment variable holding the model key (default `ANTHROPIC_API_KEY`) |
 | `EKOS_AI_MAX_ROWS` | row limit (default 200) |
+| `EKOS_AI_PER_USER_PER_DAY` | questions (SQL or dashboard) per Superset user per UTC day (default 5) |
+| `EKOS_AI_PER_DAY` | questions per day for the whole instance (default 50) |
 
 Permissions: the `EkosAI` resource (`can read` for SQL, `can write` for dashboards); Admin has both.
 
 The EKOS tools used are all read-only and in the console's scoped set: `ekos_ossie_export`,
-`ekos_search`, `ekos_sql_check`.
+`ekos_search`, `ekos_sql_check`, and `ekos_sql_generate` when the project turns it on
+(it calls a model; EKOS and the console cap it too).
 
 ## Not done yet
 
-Per-user daily limits and the abuse/ban policy of EKOS RFC 0249 are not wired in here; until they
-are, keep the instance behind an allow-list. Question text is sent to the model provider.
+The abuse/ban policy of EKOS RFC 0249 is not wired in here (the daily limits are); until it is,
+keep the instance behind sign-in. The two limits are checked then counted, so two requests at the
+same moment can pass one over the limit. Question text is sent to the model provider.
 `ekos_sql_check` is static: it cannot see value spellings or row counts.
 
 ## Build

@@ -9,7 +9,7 @@ from flask_appbuilder import BaseView, expose as view_expose
 from flask_appbuilder.api import expose, protect, safe
 from flask_appbuilder.security.decorators import has_access
 
-from superset.ekos_ai import ekos_mcp, guard, llm, service
+from superset.ekos_ai import ekos_mcp, guard, llm, quota, service
 from superset.views.base_api import BaseSupersetApi, statsd_metrics
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class EkosAIRestApi(BaseSupersetApi):
     def _answer(self, fn, text):
         try:
             return self.response(200, result=fn(text))
-        except (llm.ModelError, guard.Refused) as err:
+        except (llm.ModelError, guard.Refused, quota.LimitReached) as err:
             return self.response(200, result={"status": "failed", "explanation": str(err)})
         except ekos_mcp.EkosUnavailable as err:
             # No fallback to the database's own catalog: questions are answered from EKOS only.

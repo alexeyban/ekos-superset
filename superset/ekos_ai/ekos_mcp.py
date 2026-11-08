@@ -89,6 +89,12 @@ class EkosClient:
         self._send("notifications/initialized", notify=True)
         self._initialized = True
 
+    def tools(self) -> set[str]:
+        """The names of the tools this endpoint offers the caller."""
+        self.initialize()
+        result = self._send("tools/list", {}) or {}
+        return {str(t.get("name")) for t in result.get("tools", []) if t.get("name")}
+
     def call(self, tool: str, arguments: dict | None = None) -> dict:
         """The tool's result as JSON. A tool error raises EkosUnavailable."""
         self.initialize()
