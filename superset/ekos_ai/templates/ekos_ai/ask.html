@@ -1,0 +1,52 @@
+{% extends "appbuilder/base.html" %}
+{% block content %}
+<div class="container" style="max-width:960px">
+  <h2>Ask your data</h2>
+  <p class="text-muted">Describe what you want to know. Questions become one checked, read-only
+  SELECT; dashboards are built from validated chart specs. The model sees table and column names,
+  never row values.</p>
+  <textarea id="q" class="form-control" rows="3" maxlength="600"
+    placeholder="e.g. Total invoiced per business partner"></textarea>
+  <p style="margin-top:10px">
+    <button id="sql" class="btn btn-primary">Answer with SQL</button>
+    <button id="dash" class="btn btn-default">Build a dashboard</button>
+    <span id="busy" class="text-muted" style="margin-left:10px"></span>
+  </p>
+  <div id="out"></div>
+</div>
+<script>
+(function () {
+  var out = document.getElementById("out"), busy = document.getElementById("busy");
+  function el(tag, text, cls) { var e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
+  function render(r) {
+    out.replaceChildren();
+    if (r.explanation) out.appendChild(el("p", r.explanation));
+    if (r.question_back) out.appendChild(el("p", "Question back: " + r.question_back, "text-warning"));
+    if (r.status && r.status !== "ok") out.appendChild(el("p", "Status: " + r.status, "text-danger"));
+    if (r.sql) { out.appendChild(el("pre", r.sql)); }
+    if (r.url) { var a = el("a", "Open dashboard: " + r.title); a.href = r.url; out.appendChild(a); }
+    if (r.charts) { var ul = el("ul"); r.charts.forEach(function (c) { ul.appendChild(el("li", c)); }); out.appendChild(ul); }
+    if (r.columns) {
+      var t = el("table", undefined, "table table-condensed table-striped"), h = el("tr");
+      r.columns.forEach(function (c) { h.appendChild(el("th", c)); }); t.appendChild(h);
+      r.rows.forEach(function (row) { var tr = el("tr"); row.forEach(function (v) { tr.appendChild(el("td", v === null ? "" : v)); }); t.appendChild(tr); });
+      out.appendChild(t);
+    }
+  }
+  async function go(kind) {
+    var q = document.getElementById("q").value;
+    busy.textContent = "Working…";
+    try {
+      var tok = (await (await fetch("/api/v1/security/csrf_token/", {credentials: "same-origin"})).json()).result;
+      var res = await fetch("/api/v1/ekos_ai/" + kind, {method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/json", "X-CSRFToken": tok}, body: JSON.stringify({question: q})});
+      var body = await res.json();
+      render(res.ok ? body.result : {status: "failed", explanation: body.message || "Request failed."});
+    } catch (e) { render({status: "failed", explanation: "Request failed."}); }
+    busy.textContent = "";
+  }
+  document.getElementById("sql").onclick = function () { go("sql"); };
+  document.getElementById("dash").onclick = function () { go("dashboard"); };
+})();
+</script>
+{% endblock %}

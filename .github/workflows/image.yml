@@ -1,0 +1,36 @@
+name: Image
+on:
+  push:
+    branches: [ekos-4.1.1]
+    tags: ["ekos-v*"]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  packages: write
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests in the official image
+        run: |
+          docker run --rm -u 0 -v "$PWD/superset/ekos_ai:/app/superset/ekos_ai:ro" \
+            -v "$PWD/tests/unit_tests/ekos_ai:/t:ro" apache/superset:4.1.1 \
+            sh -c 'pip install -q pytest && cd /app && python -m pytest -q -p no:cacheprovider --noconftest /t'
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="4.1.1-ekos.${GITHUB_RUN_NUMBER}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -f Dockerfile.ekos -t "$image:$tag" -t "$image:latest" .
+          docker push "$image:$tag"
+          docker push "$image:latest"
+          echo "pushed $image:$tag"

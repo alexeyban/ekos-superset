@@ -196,6 +196,13 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         #
         # Setup API views
         #
+        if self.config.get("EKOS_AI_ENABLED"):
+            from superset.ekos_ai.api import EkosAIRestApi, EkosAIView
+
+            appbuilder.add_api(EkosAIRestApi)
+            appbuilder.add_view(
+                EkosAIView, "Ask (AI)", label=__("Ask (AI)"), icon="fa-comments", category=""
+            )
         appbuilder.add_api(AnnotationRestApi)
         appbuilder.add_api(AnnotationLayerRestApi)
         appbuilder.add_api(AsyncEventsRestApi)
