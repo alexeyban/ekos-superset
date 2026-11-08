@@ -43,7 +43,30 @@ def main() -> None:  # pragma: no cover - runs against a real metadata database
         pairs = public_permissions(
             [(pv.permission.name, pv.view_menu.name) for pv in gamma.permissions]
         )
-        database = os.environ.get("EKOS_AI_DATABASE", "")
+        # The Iceberg lakehouse through Trino, as a second source for questions (EKOS_TRINO_URI).
+        trino_uri = os.environ.get("EKOS_TRINO_URI", "")
+        trino_name = os.environ.get("EKOS_TRINO_DATABASE", "Iceberg (Trino)")
+        if trino_uri:
+            from superset.models.core import Database
+
+            existing = db.session.query(Database).filter_by(database_name=trino_name).one_or_none()
+            if existing is None:
+                db.session.add(Database(database_name=trino_name, sqlalchemy_uri=trino_uri,
+                                        expose_in_sqllab=False, allow_ctas=False, allow_cvas=False,
+                                        allow_dml=False))
+                db.session.flush()
+                print(f"database {trino_name!r} created")
+        for name in [os.environ.get("EKOS_AI_DATABASE", "")] + ([trino_name] if trino_uri else []):
+            if not name:
+                continue
+            from superset.models.core import Database
+
+            found = db.session.query(Database).filter_by(database_name=name).one_or_none()
+            if found is not None:
+                pairs.append(("database_access", found.perm))
+            else:
+                print(f"database {name!r} not found: the role gets no access to it")
+        database = ""
         if database:
             # Not DatabaseDAO: its lookup applies the signed-in user's access filter, and a
             # start-up script has no user (it failed with AttributeError: user, 2026-11-08).

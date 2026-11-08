@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class EkosAIRestApi(BaseSupersetApi):
-    method_permission_name = {"sql": "read", "dashboard": "write"}
+    method_permission_name = {"sql": "read", "dashboard": "write", "sources": "read"}
     allow_browser_login = True
     class_permission_name = "EkosAI"
     resource_name = "ekos_ai"
@@ -30,7 +30,22 @@ class EkosAIRestApi(BaseSupersetApi):
             return None, self.response(404, message="Not enabled.")
         if len(text) < 4:
             return None, self.response(400, message="Ask a question.")
+        try:
+            service.select_source(str(body.get("source") or "") or None)
+        except guard.Refused as err:
+            return None, self.response(400, message=str(err))
         return text, None
+
+    @expose("/sources", methods=("GET",))
+    @protect()
+    @safe
+    def sources(self):
+        """The sources a question may run on, for the page's picker."""
+        if not service.enabled():
+            return self.response(404, message="Not enabled.")
+        return self.response(200, result=[
+            {"id": s["id"], "label": s.get("label") or s["id"]} for s in service.sources()
+        ])
 
     @staticmethod
     def _with_log(result: dict) -> dict:

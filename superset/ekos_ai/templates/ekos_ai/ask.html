@@ -6,6 +6,7 @@
   only the tables, columns, meanings and joins EKOS compiled (never row values), and every query
   is checked by EKOS before it runs. Questions become one checked, read-only SELECT; dashboards
   are built from validated chart specs.</p>
+  <p id="src-row" style="display:none">Data: <select id="src" class="form-control" style="display:inline-block;width:auto"></select></p>
   <textarea id="q" class="form-control" rows="3" maxlength="600"
     placeholder="e.g. Total invoiced per business partner"></textarea>
   <p style="margin-top:10px">
@@ -107,12 +108,18 @@
     try {
       var tok = (await (await fetch("/api/v1/security/csrf_token/", {credentials: "same-origin"})).json()).result;
       var res = await fetch("/api/v1/ekos_ai/" + kind, {method: "POST", credentials: "same-origin",
-        headers: {"Content-Type": "application/json", "X-CSRFToken": tok}, body: JSON.stringify({question: q})});
+        headers: {"Content-Type": "application/json", "X-CSRFToken": tok}, body: JSON.stringify({question: q, source: document.getElementById("src").value || undefined})});
       var body = await res.json();
       render(res.ok ? body.result : {status: "failed", explanation: body.message || "Request failed."});
     } catch (e) { render({status: "failed", explanation: "Request failed."}); }
     busy.textContent = "";
   }
+  // The sources a question may run on (PostgreSQL, the Iceberg lakehouse): a picker when there are several.
+  fetch("/api/v1/ekos_ai/sources", {credentials: "same-origin"}).then(function (r) { return r.json(); }).then(function (b) {
+    var list = (b && b.result) || [], sel = document.getElementById("src");
+    list.forEach(function (s) { var o = el("option", s.label); o.value = s.id; sel.appendChild(o); });
+    if (list.length > 1) document.getElementById("src-row").style.display = "";
+  }).catch(function () {});
   document.getElementById("sql").onclick = function () { go("sql"); };
   document.getElementById("dash").onclick = function () { go("dashboard"); };
 })();

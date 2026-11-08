@@ -166,3 +166,20 @@ def test_the_answer_carries_the_log_of_ekos_calls(app, wired):
     steps = [e["step"] for e in ekos.log]
     assert any("model drafts" in s for s in steps)  # Superset's model, marked as not EKOS
     assert any(s.startswith("run the checked SQL") for s in steps)
+
+
+def test_a_source_overrides_database_schema_and_dialect(app, wired):
+    app.config["EKOS_AI_SOURCES"] = [
+        {"id": "postgres", "label": "PostgreSQL", "database": "pg", "schema": "adempiere", "dialect": "postgres"},
+        {"id": "iceberg", "label": "Iceberg", "database": "trino", "schema": "bronze_adempiere",
+         "dialect": "trino", "requalify": True},
+    ]
+    ekos = FakeEkos()
+    _, ran = wired(ekos, [{"status": "ok", "sql": OK_SQL}])
+    service.select_source("iceberg")
+    assert service.cfg("EKOS_AI_DATABASE") == "trino" and service.cfg("EKOS_AI_DIALECT") == "trino"
+    r = service.text_to_sql("revenue per customer")
+    assert r["status"] == "ok" and "bronze_adempiere.customer" in ran[0]
+    assert ("ekos_sql_check", "trino") in [(t, a.get("dialect")) for t, a in ekos.calls if "sql" in a]
+    with pytest.raises(service.guard.Refused):
+        service.select_source("nope")

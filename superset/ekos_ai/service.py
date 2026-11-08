@@ -45,8 +45,48 @@ under <schema>."""
 _SQLGLOT = {"mssql": "tsql", "generic": "postgres"}
 
 
+# A source (EKOS_AI_SOURCES) overrides these settings for one question: the database it runs on,
+# the schema, the SQL dialect, its EKOS project and tables, and whether table names are put in
+# the source's schema (an Iceberg copy holds the same tables under another schema).
+SOURCE_KEYS = {
+    "database": "EKOS_AI_DATABASE",
+    "schema": "EKOS_AI_SCHEMA",
+    "dialect": "EKOS_AI_DIALECT",
+    "tables": "EKOS_AI_TABLES",
+    "mcp_url": "EKOS_MCP_URL",
+    "mcp_database": "EKOS_MCP_DATABASE",
+    "requalify": "EKOS_AI_REQUALIFY",
+}
+
+
 def cfg(key: str, default: Any = None) -> Any:
+    source = g.get("ekos_source") if g else None
+    if source:
+        for field, config_key in SOURCE_KEYS.items():
+            if config_key == key and field in source:
+                return source[field]
     return current_app.config.get(key, default)
+
+
+def sources() -> list[dict]:
+    """The sources a question may run on (EKOS_AI_SOURCES: a list, or its JSON). Empty: the one
+    source the plain settings describe."""
+    raw = current_app.config.get("EKOS_AI_SOURCES") or []
+    if isinstance(raw, str):
+        raw = json.loads(raw) if raw.strip() else []
+    return [s for s in raw if isinstance(s, dict) and s.get("id") and s.get("database")]
+
+
+def select_source(source_id: str | None) -> dict | None:
+    """Make `source_id` the current source for this request; refuse an unknown one."""
+    known = sources()
+    if not known:
+        return None
+    chosen = next((s for s in known if s["id"] == source_id), None) if source_id else known[0]
+    if chosen is None:
+        raise guard.Refused(f"Unknown source {source_id!r}.")
+    g.ekos_source = chosen
+    return chosen
 
 
 def enabled() -> bool:
@@ -70,6 +110,11 @@ def _allowed() -> set[str] | None:
 
 def _dialect() -> str:
     return str(cfg("EKOS_AI_DIALECT", "postgres") or "postgres").lower()
+
+
+def _requalify_to() -> str | None:
+    """The schema every table is put in, when the source asks for it."""
+    return str(cfg("EKOS_AI_SCHEMA")) if cfg("EKOS_AI_REQUALIFY") and cfg("EKOS_AI_SCHEMA") else None
 
 
 def _client() -> ekos_mcp.EkosClient:
@@ -116,7 +161,7 @@ class Context:
         """``guard`` first (read-only, EKOS's tables only), then ``ekos_sql_check``."""
         checked = guard.check_sql(sql, self.catalog.columns(),
                                   dialect=_SQLGLOT.get(self.dialect, self.dialect),
-                                  max_rows=max_rows)
+                                  max_rows=max_rows, schema=_requalify_to())
         report = knowledge.check(self.client, checked.sql, self.dialect)
         return checked, report
 
@@ -236,7 +281,8 @@ def generated_by_ekos(ctx: Context, question: str, max_rows: int) -> dict:
                 "ekos": knowledge.grounding(ctx.catalog, tuple(ctx.names), None)}
     try:
         checked = guard.check_sql(sql, ctx.catalog.columns(),
-                                  dialect=_SQLGLOT.get(ctx.dialect, ctx.dialect), max_rows=max_rows)
+                                  dialect=_SQLGLOT.get(ctx.dialect, ctx.dialect), max_rows=max_rows,
+                                  schema=_requalify_to())
     except guard.Refused as err:
         return {"status": "refused", "sql": str(sql)[:2000], "explanation": str(err)}
     open_findings = [str(f) for f in result.get("open_findings") or []]

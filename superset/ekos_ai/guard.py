@@ -32,7 +32,8 @@ class Checked:
 
 
 def check_sql(
-    sql: str, tables: dict[str, list[str]], *, dialect: str = "postgres", max_rows: int = 200
+    sql: str, tables: dict[str, list[str]], *, dialect: str = "postgres", max_rows: int = 200,
+    schema: str | None = None,
 ) -> Checked:
     """Return the SQL with a row limit if it is acceptable, else raise Refused.
 
@@ -63,6 +64,7 @@ def check_sql(
                 raise Refused(f"The function {name} is not allowed.")
         if isinstance(node, exp.Anonymous) and str(node.this).lower().startswith("pg_"):
             raise Refused(f"The function {node.this} is not allowed.")
+    requalify_to = schema  # the loop below names each table's own schema `schema`
     ctes = {c.alias_or_name.lower() for c in root.find_all(exp.CTE)}
     used: list[str] = []
     for table in root.find_all(exp.Table):
@@ -77,6 +79,12 @@ def check_sql(
         used.append(name)
     if not used:
         raise Refused("The query reads no table.")
+    if requalify_to:
+        # The source holds these tables under another schema (an Iceberg copy): name it.
+        for table in root.find_all(exp.Table):
+            if (table.name or "").lower() in ctes and not table.db:
+                continue
+            table.set("db", exp.to_identifier(requalify_to))
     if root.args.get("limit") is None and isinstance(root, exp.Select):
         root = root.limit(max_rows)
     return Checked(sql=root.sql(dialect=dialect), tables=tuple(sorted(set(used))))
