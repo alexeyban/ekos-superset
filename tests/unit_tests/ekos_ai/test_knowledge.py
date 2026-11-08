@@ -100,7 +100,7 @@ def test_truncated_export_fetches_missing_allowed_tables():
     first["model"]["datasets"] = first["model"]["datasets"][:1]
 
     class Paged(FakeEkos):
-        def call(self, tool, arguments=None):
+        def call(self, tool, arguments=None, *, step=""):
             self.calls.append((tool, arguments))
             if arguments.get("match"):
                 return OSSIE

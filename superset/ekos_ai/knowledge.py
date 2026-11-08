@@ -266,17 +266,23 @@ def load(client: EkosClient, *, allowed: set[str] | None, database: str = "",
     key = (client.url, database, status, tuple(sorted(allowed or ())))
     hit = _CACHE.get(key)
     if hit and time.time() - hit[0] < _TTL:
+        log = getattr(client, "log", None)
+        if isinstance(log, list):
+            log.append({"step": "read the compiled schema", "tool": "ekos_ossie_export", "ok": True,
+                        "ms": 0, "summary": f"{len(hit[1].tables)} tables, {len(hit[1].joins)} "
+                        f"joins — from EKOS {int(time.time() - hit[0])} s ago (cached)"})
         return hit[1]
     args: dict[str, Any] = {"status": status, "max_datasets": MAX_DATASETS}
     if database:
         args["database"] = database
-    first = client.call("ekos_ossie_export", args)
+    first = client.call("ekos_ossie_export", args, step="read the compiled schema")
     catalog = catalog_from_ossie(first, allowed)
     if catalog.truncated and allowed:
         # The export stopped at MAX_DATASETS: fetch each allowed table it left out, then build
         # one catalog from every answer so a join to a late table is kept.
         results = [first] + [
-            client.call("ekos_ossie_export", {**args, "match": name, "max_datasets": 20})
+            client.call("ekos_ossie_export", {**args, "match": name, "max_datasets": 20},
+                        step=f"read table {name}")
             for name in sorted(allowed - set(catalog.tables))
         ]
         catalog = catalog_from_ossie(_merge(results), allowed)
@@ -311,13 +317,16 @@ def search_names(client: EkosClient, question: str) -> list[str]:
     words = [w for w in _WORD.findall(question.lower()) if len(w) > 2][:6]
     if not words:
         return []
-    result = client.call("ekos_search", {"query": " ".join(words), "limit": 30})
+    result = client.call("ekos_search", {"query": " ".join(words), "limit": 30},
+                         step="find the tables the question is about")
     return [str(m.get("name") or "") for m in result.get("matches") or [] if m.get("name")]
 
 
 def check(client: EkosClient, sql: str, dialect: str) -> dict:
-    return client.call("ekos_sql_check", {"sql": sql, "dialect": dialect})
+    return client.call("ekos_sql_check", {"sql": sql, "dialect": dialect},
+                       step="check the SQL against the compiled schema")
 
 
 def dialect_notes(client: EkosClient, dialect: str) -> list[str]:
-    return [str(n) for n in client.call("ekos_sql_check", {"dialect": dialect}).get("dialect_notes") or []]
+    rules = client.call("ekos_sql_check", {"dialect": dialect}, step=f"read the {dialect} rules")
+    return [str(n) for n in rules.get("dialect_notes") or []]

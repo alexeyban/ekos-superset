@@ -53,13 +53,14 @@ class FakeEkos:
 
     def __init__(self, check_reports=None, ossie=OSSIE, down=False, generated=None):
         self.calls = []
+        self.log = []
         # An `ekos_sql_generate` answer: listed (and returned) only when given (RFC 0250).
         self.generated = generated
         self.check_reports = list(check_reports or [])
         self.ossie = ossie
         self.down = down
 
-    def call(self, tool, arguments=None):
+    def call(self, tool, arguments=None, *, step=""):
         arguments = arguments or {}
         self.calls.append((tool, arguments))
         if self.down:

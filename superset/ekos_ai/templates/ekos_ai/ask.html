@@ -33,7 +33,46 @@
       r.rows.forEach(function (row) { var tr = el("tr"); row.forEach(function (v) { tr.appendChild(el("td", v === null ? "" : v)); }); t.appendChild(tr); });
       out.appendChild(t);
     }
+    if (r.ekos_error) renderError(r.ekos_error);
     if (r.ekos) renderEkos(r.ekos);
+    if (r.ekos_log && r.ekos_log.length) renderLog(r.ekos_log);
+  }
+  function renderError(e) {
+    var box = el("div", undefined, "alert alert-danger");
+    box.appendChild(el("strong", "Why it was not answered"));
+    var dl = el("dl", undefined, "dl-horizontal");
+    [["Step", e.step], ["EKOS endpoint", e.endpoint], ["What happened", e.cause],
+     ["After", e.elapsed_ms !== undefined ? (e.elapsed_ms / 1000).toFixed(1) + " s" : undefined],
+     ["What to do", e.hint]].forEach(function (p) {
+      if (p[1] === undefined || p[1] === null || p[1] === "") return;
+      dl.appendChild(el("dt", p[0])); dl.appendChild(el("dd", String(p[1])));
+    });
+    box.appendChild(dl);
+    out.appendChild(box);
+  }
+  // Every call behind the answer, in order: what EKOS was asked, how long it took, what came back.
+  function renderLog(log) {
+    var box = el("div", undefined, "panel panel-default");
+    var head = el("div", undefined, "panel-heading");
+    var total = log.reduce(function (s, x) { return s + (x.ms || 0); }, 0);
+    head.appendChild(el("strong", "How EKOS answered: " + log.length + " steps, " + (total / 1000).toFixed(1) + " s"));
+    box.appendChild(head);
+    var t = el("table", undefined, "table table-condensed small"), h = el("tr");
+    ["#", "Step", "EKOS tool / call", "Arguments", "Time", "Result"].forEach(function (c) { h.appendChild(el("th", c)); });
+    t.appendChild(h);
+    log.forEach(function (x, i) {
+      var tr = el("tr", undefined, x.ok === false ? "danger" : "");
+      tr.appendChild(el("td", String(i + 1)));
+      tr.appendChild(el("td", x.step || ""));
+      tr.appendChild(el("td", x.tool || x.method || ""));
+      var args = el("td"); if (x.arguments && x.arguments !== "{}") args.appendChild(el("code", x.arguments)); tr.appendChild(args);
+      tr.appendChild(el("td", x.ms !== undefined ? x.ms + " ms" : ""));
+      tr.appendChild(el("td", x.ok === false ? "failed: " + (x.error || "") : (x.summary || "ok")));
+      t.appendChild(tr);
+    });
+    var wrap = el("div"); wrap.style.overflowX = "auto"; wrap.appendChild(t);
+    box.appendChild(wrap);
+    out.appendChild(box);
   }
   function renderEkos(k) {
     var box = el("div", undefined, "well well-sm");

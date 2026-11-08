@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 
-from flask import request
+from flask import g, request
 from flask_appbuilder import BaseView, expose as view_expose
 from flask_appbuilder.api import expose, protect, safe
 from flask_appbuilder.security.decorators import has_access
@@ -32,18 +32,29 @@ class EkosAIRestApi(BaseSupersetApi):
             return None, self.response(400, message="Ask a question.")
         return text, None
 
+    @staticmethod
+    def _with_log(result: dict) -> dict:
+        """Every answer carries the log of the EKOS calls behind it (and failures too)."""
+        client = getattr(g, "ekos_client", None)
+        if client is not None:
+            result["ekos_log"] = client.log
+        return result
+
     def _answer(self, fn, text):
         try:
-            return self.response(200, result=fn(text))
+            return self.response(200, result=self._with_log(fn(text)))
         except (llm.ModelError, guard.Refused, quota.LimitReached) as err:
-            return self.response(200, result={"status": "failed", "explanation": str(err)})
+            return self.response(200, result=self._with_log(
+                {"status": "failed", "explanation": str(err)}))
         except ekos_mcp.EkosUnavailable as err:
             # No fallback to the database's own catalog: questions are answered from EKOS only.
-            logger.warning("ekos_ai: EKOS unavailable: %s", err)
-            return self.response(200, result={
+            logger.warning("ekos_ai: EKOS unavailable: %s %s", err, err.detail)
+            return self.response(200, result=self._with_log({
                 "status": "failed",
-                "explanation": f"{err} Questions are answered only from EKOS's compiled knowledge.",
-            })
+                "explanation": f"{err} Questions are answered only from EKOS's compiled "
+                               "knowledge, so this one was not answered.",
+                "ekos_error": err.detail,
+            }))
         except Exception:  # noqa: BLE001 - logged, and the person gets a plain message
             logger.exception("ekos_ai failed")
             return self.response(500, message="The question could not be answered.")

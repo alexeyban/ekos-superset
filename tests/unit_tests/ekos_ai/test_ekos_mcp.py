@@ -78,14 +78,16 @@ def test_unreachable_is_unavailable():
 
 
 def test_no_url_is_unavailable():
-    with pytest.raises(EkosUnavailable, match="EKOS_MCP_URL"):
+    with pytest.raises(EkosUnavailable, match="not configured") as err:
         EkosClient("")
+    assert "EKOS_MCP_URL" in err.value.detail["cause"]
 
 
 def test_jsonrpc_error_is_unavailable():
     post = FakePost(lambda m: Resp({"jsonrpc": "2.0", "id": 1, "error": {"code": -32601, "message": "method not found"}}))
-    with pytest.raises(EkosUnavailable, match="method not found"):
+    with pytest.raises(EkosUnavailable) as err:
         EkosClient("http://ekos/mcp", post=post).call("ekos_status")
+    assert "method not found" in err.value.detail["cause"]
 
 
 def test_parse_body_rejects_garbage():
@@ -93,3 +95,43 @@ def test_parse_body_rejects_garbage():
         parse_body("<html>", "text/html")
     with pytest.raises(EkosUnavailable):
         parse_body("data: {}\n", "text/event-stream")
+
+
+def test_every_request_is_logged_with_a_summary():
+    ossie = {"model": {"datasets": [{"name": "a"}, {"name": "b"}], "relationships": [{}]}}
+    post = FakePost(lambda m: Resp(tool_result(ossie)))
+    client = EkosClient("http://ekos/mcp?x=1", token="t0k", post=post)
+    client.call("ekos_ossie_export", {"status": "confirmed"}, step="read the compiled schema")
+    steps = [e["step"] for e in client.log]
+    assert steps == ["connect", "read the compiled schema"]
+    last = client.log[-1]
+    assert last["ok"] is True and last["tool"] == "ekos_ossie_export"
+    assert last["summary"] == "2 tables, 1 foreign-key joins"
+    assert '"status": "confirmed"' in last["arguments"] and isinstance(last["ms"], int)
+    assert "t0k" not in str(client.log)
+
+
+def test_a_timeout_says_which_step_where_and_what_to_do():
+    def post(url, headers, json, timeout):
+        if json["method"] == "initialize":
+            return Resp({"jsonrpc": "2.0", "id": 1, "result": {}})
+        if "id" not in json:
+            return Resp("", status=202)
+        raise requests.Timeout("read timed out")
+
+    client = EkosClient("https://console.example/mcp/default/idempiere", token="secret", post=post, timeout=30)
+    with pytest.raises(EkosUnavailable) as err:
+        client.call("ekos_search", {"query": "orders"}, step="find the tables")
+    d = err.value.detail
+    assert d["step"] == "find the tables" and d["cause"] == "no answer within 30 s"
+    assert d["endpoint"] == "https://console.example/mcp/default/idempiere"
+    assert "loading" in d["hint"] and "secret" not in str(d)
+    assert client.log[-1]["ok"] is False
+
+
+def test_a_gateway_error_is_explained():
+    post = FakePost(lambda m: Resp({"jsonrpc": "2.0", "id": 2, "error": {
+        "code": -32603, "message": "the project's server is not ready: never became ready"}}))
+    with pytest.raises(EkosUnavailable) as err:
+        EkosClient("http://ekos/mcp", post=post).call("ekos_status")
+    assert "not ready" in err.value.detail["cause"] and "starting" in err.value.detail["hint"]

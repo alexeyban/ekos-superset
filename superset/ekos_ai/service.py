@@ -9,6 +9,7 @@ is answered. Superset's own commands build the datasets, charts and dashboard.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from typing import Any
 
@@ -72,7 +73,17 @@ def _dialect() -> str:
 
 
 def _client() -> ekos_mcp.EkosClient:
-    return ekos_mcp.from_config(cfg)
+    client = ekos_mcp.from_config(cfg)
+    g.ekos_client = client  # the API reads its log, also when the question fails
+    return client
+
+
+def _log_model(client, step: str, started: float, ok: bool, note: str) -> None:
+    """Superset's own model call, in the same log as the EKOS calls (it is not EKOS)."""
+    log = getattr(client, "log", None)
+    if isinstance(log, list):
+        log.append({"step": step, "tool": f"model {cfg('EKOS_AI_MODEL')} (Superset, not EKOS)",
+                    "ok": ok, "ms": round((time.monotonic() - started) * 1000), "summary": note})
 
 
 class Context:
@@ -107,11 +118,20 @@ class Context:
         return checked, report
 
 
-def _ask(system: str, user: str, dialect: str) -> dict:
-    return llm.complete(
-        system.format(dialect=dialect), user, model=cfg("EKOS_AI_MODEL"),
-        base_url=cfg("EKOS_AI_BASE_URL"), key_env=cfg("EKOS_AI_KEY_ENV", "ANTHROPIC_API_KEY"),
-    )
+def _ask(system: str, user: str, dialect: str, client=None, step: str = "model drafts") -> dict:
+    started = time.monotonic()
+    try:
+        answer = llm.complete(
+            system.format(dialect=dialect), user, model=cfg("EKOS_AI_MODEL"),
+            base_url=cfg("EKOS_AI_BASE_URL"), key_env=cfg("EKOS_AI_KEY_ENV", "ANTHROPIC_API_KEY"),
+        )
+    except llm.ModelError as err:
+        _log_model(client, step, started, False, str(err))
+        raise
+    sql = " ".join(str(answer.get("sql") or "").split())
+    _log_model(client, step, started, True,
+               f"status {answer.get('status')}" + (f"; SQL: {sql[:200]}" if sql else ""))
+    return answer
 
 
 def _not_ok(proposal: dict, ctx: Context | None = None) -> dict:
@@ -154,7 +174,7 @@ def _plain(frame) -> dict:
 def draft_sql(ctx: Context, question: str, max_rows: int) -> dict:
     """The model's SQL, accepted only once guard and EKOS find no error (one repair round)."""
     user = ctx.prompt(question)
-    proposal = _ask(SQL_SYSTEM, user, ctx.dialect)
+    proposal = _ask(SQL_SYSTEM, user, ctx.dialect, ctx.client, "model drafts the SQL from EKOS's schema")
     for attempt in (1, 2):
         if proposal.get("status") != "ok":
             return _not_ok(proposal, ctx)
@@ -175,7 +195,8 @@ def draft_sql(ctx: Context, question: str, max_rows: int) -> dict:
                     "ekos": knowledge.grounding(ctx.catalog, tuple(ctx.names), report)}
         repair = REPAIR.format(errors="\n".join(f"- {p}" for p in problems))
         proposal = _ask(SQL_SYSTEM, user + "\n<previous_sql>\n" + str(proposal.get("sql", ""))[:4000]
-                        + "\n</previous_sql>\n" + repair, ctx.dialect)
+                        + "\n</previous_sql>\n" + repair, ctx.dialect, ctx.client,
+                        "model corrects the SQL after EKOS's check")
     raise AssertionError("unreachable")
 
 
@@ -202,7 +223,7 @@ def generated_by_ekos(ctx: Context, question: str, max_rows: int) -> dict:
     args: dict[str, Any] = {"question": question[:2000], "dialect": ctx.dialect}
     if cfg("EKOS_MCP_DATABASE"):
         args["database"] = cfg("EKOS_MCP_DATABASE")
-    result = ctx.client.call(GENERATE_TOOL, args)
+    result = ctx.client.call(GENERATE_TOOL, args, step="EKOS writes the SQL (its own agent)")
     status, sql = result.get("status"), result.get("sql")
     if status == "limit":
         return {"status": "failed", "explanation": str(result.get("reason", "EKOS's daily limit is reached."))[:300]}
@@ -243,10 +264,16 @@ def text_to_sql(question: str) -> dict:
     ekos["author"] = drafted.get("author", "model, checked by EKOS")
     ekos["remaining"] = left
     database = _database()
+    started = time.monotonic()
+    step = f"run the checked SQL on {cfg('EKOS_AI_DATABASE')} (read-only, not EKOS)"
     try:
         frame = _run(database, cfg("EKOS_AI_SCHEMA", "public"), checked.sql, max_rows)
     except Exception as err:  # the database's own message is the useful one
+        ctx.client.log.append({"step": step, "ok": False, "error": str(err)[:300],
+                               "ms": round((time.monotonic() - started) * 1000)})
         return {"status": "failed", "sql": checked.sql, "explanation": str(err)[:300], "ekos": ekos}
+    ctx.client.log.append({"step": step, "ok": True, "summary": f"{len(frame)} rows",
+                           "ms": round((time.monotonic() - started) * 1000)})
     return {"status": "ok", "sql": checked.sql, "tables": list(checked.tables),
             "explanation": drafted["explanation"], "ekos": ekos, **_plain(frame)}
 
@@ -256,7 +283,8 @@ def text_to_dashboard(question: str) -> dict:
     if not ctx.names:
         return _no_tables(ctx)
     left = _spend_question()  # after EKOS answered, before any model call
-    proposal = _ask(DASH_SYSTEM, ctx.prompt(question), ctx.dialect)
+    proposal = _ask(DASH_SYSTEM, ctx.prompt(question), ctx.dialect, ctx.client,
+                    "model designs the charts from EKOS's schema")
     if proposal.get("status") != "ok":
         return _not_ok(proposal, ctx)
     specs = proposal.get("charts")

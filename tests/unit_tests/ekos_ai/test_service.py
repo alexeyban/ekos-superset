@@ -26,7 +26,13 @@ def wired(monkeypatch):
     """Install a fake EKOS and a scripted model; returns (ekos, prompts, ran)."""
     def install(ekos, answers):
         prompts, ran = [], []
-        monkeypatch.setattr(service, "_client", lambda: ekos)
+        def client():
+            from flask import g
+            g.ekos_client = ekos
+            if not isinstance(getattr(ekos, "log", None), list):
+                ekos.log = []
+            return ekos
+        monkeypatch.setattr(service, "_client", client)
         monkeypatch.setattr(service.llm, "complete",
                             lambda system, user, **kw: prompts.append(user) or answers.pop(0))
         monkeypatch.setattr(service, "_database", lambda: object())
@@ -147,3 +153,16 @@ def test_the_quota_is_spent_only_after_ekos_answered(app, wired, monkeypatch):
     with pytest.raises(ekos_mcp.EkosUnavailable):
         service.text_to_sql("revenue per customer")
     assert spent == []
+
+
+def test_the_answer_carries_the_log_of_ekos_calls(app, wired):
+    from flask import g
+
+    ekos = FakeEkos()
+    ekos.log = []
+    wired(ekos, [{"status": "ok", "sql": OK_SQL}])
+    service.text_to_sql("revenue per customer")
+    assert g.ekos_client is ekos
+    steps = [e["step"] for e in ekos.log]
+    assert any("model drafts" in s for s in steps)  # Superset's model, marked as not EKOS
+    assert any(s.startswith("run the checked SQL") for s in steps)
