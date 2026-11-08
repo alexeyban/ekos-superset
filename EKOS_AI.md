@@ -73,3 +73,21 @@ same moment can pass one over the limit. Question text is sent to the model prov
 
 `Dockerfile.ekos` overlays the module on the official image. Tests run in the official image:
 `tests/unit_tests/ekos_ai` (a fake EKOS and a scripted model; no network, no model calls).
+
+## Public sign-in (EKOS RFC 0251)
+
+Behind Azure Container Apps' authentication (require sign-in), `superset.ekos_ai.remote_user.PlatformUser`
+turns `X-MS-CLIENT-PRINCIPAL-IDP` / `-NAME` into `REMOTE_USER` (`<idp>:<name>`, e.g. `github:octocat`):
+
+```python
+from flask_appbuilder.security.manager import AUTH_REMOTE_USER
+from superset.ekos_ai.remote_user import PlatformUser
+AUTH_TYPE = AUTH_REMOTE_USER
+AUTH_USER_REGISTRATION = True
+AUTH_USER_REGISTRATION_ROLE = "EkosPublic"
+ADDITIONAL_MIDDLEWARE = [PlatformUser]
+```
+
+After `superset init`, `python -m superset.ekos_ai.public_role` creates `EkosPublic` (Gamma without SQL
+Lab, plus Ask (AI) and access to `EKOS_AI_DATABASE`) and makes the `EKOS_ADMINS` sign-in names Admin.
+Only behind that authentication: it strips the headers from outside requests.

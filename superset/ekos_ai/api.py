@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from flask import request
 from flask_appbuilder import BaseView, expose as view_expose
@@ -69,6 +70,9 @@ class EkosAIRestApi(BaseSupersetApi):
 class EkosAIView(BaseView):
     route_base = "/ekos-ai"
     default_view = "ask"
+    # Absolute: Flask-AppBuilder resolves a relative template folder against its own package,
+    # so `templates/ekos_ai/ask.html` beside this module was never found (the page answered 500).
+    template_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
     @view_expose("/")
     @has_access
