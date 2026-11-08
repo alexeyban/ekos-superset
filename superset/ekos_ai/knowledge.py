@@ -152,6 +152,20 @@ def _words(text: str) -> set[str]:
     return {_stem(w) for w in _WORD.findall(text.lower()) if len(w) > 2}
 
 
+def _close(word: str, token: str) -> bool:
+    """`invoiced` ~ `invoice`, `partner` ~ `bpartner`: one contains the other (4+ letters), or
+    they share a 5-letter start. Table names here are abbreviations, so exact words miss."""
+    if word == token:
+        return True
+    if len(word) >= 4 and len(token) >= 4 and (word in token or token in word):
+        return True
+    return len(word) >= 5 and len(token) >= 5 and word[:5] == token[:5]
+
+
+def _hits(words: set[str], tokens: set[str]) -> int:
+    return sum(1 for w in words if any(_close(w, t) for t in tokens))
+
+
 def rank(question: str, catalog: Catalog, searched: list[str] | None = None,
          keep: int = KEEP) -> list[str]:
     """The tables a question most likely needs, best first.
@@ -167,9 +181,9 @@ def rank(question: str, catalog: Catalog, searched: list[str] | None = None,
         boost.setdefault(name.lower(), max(1, 6 - position))
     scored = []
     for name, table in catalog.tables.items():
-        score = 4 * len(words & _words(name.replace("_", " ")))
-        score += 3 * len(words & _words(" ".join(table.synonyms)))
-        score += len(words & _words(table.description))
+        score = 4 * _hits(words, _words(name.replace("_", " ")))
+        score += 3 * _hits(words, _words(" ".join(table.synonyms)))
+        score += _hits(words, _words(table.description))
         for column in table.columns:
             column_words = _words(column.name.replace("_", " ") + " " + " ".join(column.synonyms))
             score += 1 if words & column_words else 0

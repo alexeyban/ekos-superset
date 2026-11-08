@@ -67,7 +67,7 @@
       tr.appendChild(el("td", x.tool || x.method || ""));
       var args = el("td"); if (x.arguments && x.arguments !== "{}") args.appendChild(el("code", x.arguments)); tr.appendChild(args);
       tr.appendChild(el("td", x.ms !== undefined ? x.ms + " ms" : ""));
-      tr.appendChild(el("td", x.ok === false ? "failed: " + (x.error || "") : (x.summary || "ok")));
+      tr.appendChild(el("td", x.ok === false ? "failed: " + (x.error || "") : (x.summary || "ok") + ((x.notes || []).length ? " — EKOS note: " + x.notes.join(" ") : "")));
       t.appendChild(tr);
     });
     var wrap = el("div"); wrap.style.overflowX = "auto"; wrap.appendChild(t);

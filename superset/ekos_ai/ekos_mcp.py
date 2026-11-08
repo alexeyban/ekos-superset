@@ -196,9 +196,13 @@ class EkosClient:
         result = self._send("tools/call", {"name": tool, "arguments": arguments or {}},
                             step=step or tool) or {}
         entry = self.log[-1]
-        text = "".join(
-            c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"
-        )
+        texts = [c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"]
+        # The first text item is the tool's JSON; EKOS may add notes after it (e.g. RFC 0171:
+        # "the ledger may be behind the sources"). Joining them broke the JSON on Azure.
+        text = texts[0] if texts else ""
+        notes = [t.strip() for t in texts[1:] if t.strip()]
+        if notes:
+            entry["notes"] = [n[:300] for n in notes]
         if result.get("isError"):
             entry.update(ok=False, error=text[:300] or "error")
             raise EkosUnavailable(f"EKOS could not answer ({tool}).", {

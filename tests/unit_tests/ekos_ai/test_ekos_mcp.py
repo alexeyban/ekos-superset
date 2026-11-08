@@ -135,3 +135,16 @@ def test_a_gateway_error_is_explained():
     with pytest.raises(EkosUnavailable) as err:
         EkosClient("http://ekos/mcp", post=post).call("ekos_status")
     assert "not ready" in err.value.detail["cause"] and "starting" in err.value.detail["hint"]
+
+
+def test_a_note_after_the_json_is_kept_apart():
+    # Found on Azure 2026-11-08: EKOS adds a freshness note as a second text item; joining the
+    # items made the JSON unparsable and Superset saw no tables at all.
+    answer = {"jsonrpc": "2.0", "id": 1, "result": {"content": [
+        {"type": "text", "text": json.dumps({"datasets": 1})},
+        {"type": "text", "text": "Note: the ledger may be behind the sources (3 files changed)."},
+    ], "isError": False}}
+    post = FakePost(lambda m: Resp(answer))
+    client = EkosClient("http://ekos/mcp", post=post)
+    assert client.call("ekos_ossie_export") == {"datasets": 1}
+    assert client.log[-1]["notes"] == ["Note: the ledger may be behind the sources (3 files changed)."]

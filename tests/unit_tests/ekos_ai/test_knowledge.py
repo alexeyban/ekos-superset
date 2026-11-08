@@ -118,3 +118,14 @@ def test_an_allow_list_is_asked_for_by_exact_names_in_one_call():
     knowledge.load(fake, allowed={"store_sales", "item"})
     exports = [a for t, a in fake.calls if t == "ekos_ossie_export"]
     assert len(exports) == 1 and exports[0]["names"] == ["item", "store_sales"]
+
+
+def test_abbreviated_table_names_still_rank():
+    from superset.ekos_ai.knowledge import Catalog, Column, Table
+    cat = Catalog(tables={
+        "c_invoice": Table("c_invoice", (Column("grandtotal"),)),
+        "c_bpartner": Table("c_bpartner", (Column("name"),)),
+        "m_warehouse": Table("m_warehouse", (Column("name"),)),
+    })
+    ranked = knowledge.rank("invoiced total per business partner", cat, [])
+    assert set(ranked[:2]) == {"c_invoice", "c_bpartner"} and "m_warehouse" not in ranked

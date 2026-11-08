@@ -97,7 +97,10 @@ class Context:
             status=cfg("EKOS_MCP_STATUS", "confirmed") or "confirmed",
         )
         self.names = knowledge.rank(question, self.catalog, knowledge.search_names(client, question))
-        if not self.names and len(self.catalog.tables) <= knowledge.KEEP:
+        if not self.names and (len(self.catalog.tables) <= knowledge.KEEP
+                                or (_allowed() and len(self.catalog.tables) <= 30)):
+            # Nothing ranked: a small catalog, or the operator's curated allow-list, is shown
+            # whole and the model decides; a large one gets a question back.
             self.names = sorted(self.catalog.tables)
         self.rules = knowledge.dialect_notes(client, self.dialect)
 
