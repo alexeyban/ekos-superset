@@ -51,8 +51,11 @@ OSSIE = {
 class FakeEkos:
     url = "fake://ekos"
 
-    def __init__(self, check_reports=None, ossie=OSSIE, down=False, generated=None):
+    def __init__(self, check_reports=None, ossie=OSSIE, down=False, generated=None,
+                 generate_takes_tables=False):
         self.calls = []
+        # EKOS 1.4.4+: `ekos_sql_generate` lists a `tables` argument.
+        self.generate_takes_tables = generate_takes_tables
         self.log = []
         # An `ekos_sql_generate` answer: listed (and returned) only when given (RFC 0250).
         self.generated = generated
@@ -89,6 +92,9 @@ class FakeEkos:
             raise EkosUnavailable("EKOS could not be reached.")
         names = {"ekos_ossie_export", "ekos_search", "ekos_sql_check"}
         return names | ({"ekos_sql_generate"} if self.generated is not None else set())
+
+    def accepts(self, tool, argument):
+        return tool == "ekos_sql_generate" and argument == "tables" and self.generate_takes_tables
 
     def called(self):
         return [t for t, _ in self.calls]

@@ -133,9 +133,34 @@ def test_ekos_writes_the_sql_when_it_offers_the_generator(app, wired):
 
 def test_generated_sql_still_passes_the_read_only_guard(app, wired):
     ekos = FakeEkos(generated={"status": "ok", "sql": "delete from customer"})
-    _, ran = wired(ekos, [])
+    prompts, ran = wired(ekos, [{"status": "ok", "sql": OK_SQL}])
     r = service.text_to_sql("revenue per customer")
-    assert r["status"] == "refused" and ran == []
+    # Refused, then drafted over the allowed tables and checked by EKOS: the delete never runs.
+    assert r["status"] == "ok" and len(prompts) == 1
+    assert len(ran) == 1 and "delete" not in ran[0].lower()
+    assert any("outside the allowed" in e["step"] for e in ekos.log)
+
+
+def test_a_refused_ekos_query_falls_back_and_a_failed_draft_says_why(app, wired):
+    ekos = FakeEkos(generated={"status": "ok", "sql": "select * from ad_user"})
+    _, ran = wired(ekos, [{"status": "impossible", "sql": None, "explanation": "no such data"}])
+    r = service.text_to_sql("who buys most")
+    assert r["status"] != "ok" and ran == []
+
+
+def test_the_allowed_tables_go_to_ekos_when_its_generator_takes_them(app, wired):
+    app.config["EKOS_AI_TABLES"] = "customer,store_sales"
+    ekos = FakeEkos(generated={"status": "ok", "sql": OK_SQL, "open_findings": []},
+                    generate_takes_tables=True)
+    wired(ekos, [])
+    service.text_to_sql("revenue per customer")
+    sent = [a for t, a in ekos.calls if t == "ekos_sql_generate"][0]
+    assert sent["tables"] == ["customer", "store_sales"]
+
+    older = FakeEkos(generated={"status": "ok", "sql": OK_SQL, "open_findings": []})
+    wired(older, [])
+    service.text_to_sql("revenue per customer")
+    assert "tables" not in [a for t, a in older.calls if t == "ekos_sql_generate"][0]
 
 
 def test_ekos_limit_and_no_sql_are_plain_answers(app, wired):

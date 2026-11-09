@@ -276,6 +276,11 @@ def generated_by_ekos(ctx: Context, question: str, max_rows: int) -> dict:
     args: dict[str, Any] = {"question": question[:2000], "dialect": ctx.dialect}
     if cfg("EKOS_MCP_DATABASE"):
         args["database"] = cfg("EKOS_MCP_DATABASE")
+    allowed = _allowed()
+    accepts = getattr(ctx.client, "accepts", None)
+    if allowed and callable(accepts) and accepts(GENERATE_TOOL, "tables"):
+        # EKOS 1.4.4+: the agent sees only the tables questions may use.
+        args["tables"] = sorted(allowed)
     result = ctx.client.call(GENERATE_TOOL, args, step="EKOS writes the SQL (its own agent)")
     status, sql = result.get("status"), result.get("sql")
     if status == "limit":
@@ -309,6 +314,13 @@ def text_to_sql(question: str) -> dict:
     max_rows = int(cfg("EKOS_AI_MAX_ROWS", 200))
     if GENERATE_TOOL in ctx.client.tools():
         drafted = generated_by_ekos(ctx, question, max_rows)
+        if drafted["status"] == "refused":
+            # EKOS's agent used a table questions may not (an EKOS without `tables` sees every
+            # compiled table): draft over the allowed tables instead, still checked by EKOS.
+            ctx.client.log.append({"step": "EKOS's SQL used a table outside the allowed ones; "
+                                           "drafting over the allowed tables instead",
+                                   "ok": False, "error": drafted.get("explanation", "")[:300]})
+            drafted = draft_sql(ctx, question, max_rows)
     else:
         drafted = draft_sql(ctx, question, max_rows)
     if drafted["status"] != "ok":

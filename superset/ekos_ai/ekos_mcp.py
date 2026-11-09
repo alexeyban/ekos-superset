@@ -130,6 +130,7 @@ class EkosClient:
         self._post = post or requests.post
         self._ids = itertools.count(1)
         self._initialized = False
+        self.tool_inputs: dict[str, dict] = {}  # each tool's input schema, from tools/list
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -225,10 +226,16 @@ class EkosClient:
         self.initialize()
         result = self._send("tools/list", {}, step="list tools") or {}
         names = {str(t.get("name")) for t in result.get("tools", []) if t.get("name")}
+        self.tool_inputs = {str(t["name"]): t.get("inputSchema") or {}
+                            for t in result.get("tools", []) if t.get("name")}
         self.log[-1]["summary"] = f"{len(names)} tools" + (
             "; ekos_sql_generate offered" if "ekos_sql_generate" in names else "")
         self.log.changed()
         return names
+
+    def accepts(self, tool: str, argument: str) -> bool:
+        """Whether the tool's input schema (from the last tools/list) names this argument."""
+        return argument in ((self.tool_inputs.get(tool) or {}).get("properties") or {})
 
     def call(self, tool: str, arguments: dict | None = None, *, step: str = "") -> dict:
         """The tool's result as JSON. A tool error raises EkosUnavailable."""
