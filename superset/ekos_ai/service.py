@@ -275,6 +275,8 @@ def _spend_question() -> dict:
     from superset.extensions import db
 
     user = getattr(g, "user", None)
+    if quota.unlimited(getattr(user, "username", "") or "", cfg("EKOS_AI_UNLIMITED_USERS", "") or ""):
+        return {"yours": "no limit", "everyone": "not counted"}
     key = f"u{getattr(user, 'id', None) or 'anon'}"
     return quota.spend(
         db.engine, key,

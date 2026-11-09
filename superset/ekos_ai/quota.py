@@ -1,7 +1,7 @@
 """Daily question limits (EKOS RFC 0250): per Superset user and for the whole instance.
 
 Every Ask (AI) request, SQL or dashboard, spends one of the person's questions and one of the
-instance's before any model is called. The counts live in Superset's metadata database, in one
+instance's before any model is called — except for the people in ``EKOS_AI_UNLIMITED_USERS``. The counts live in Superset's metadata database, in one
 small table this module creates (``ekos_ai_usage``; ``user_key`` ``*`` is the instance's row).
 A day is a UTC day.
 """
@@ -24,6 +24,13 @@ _CREATE = (
 
 class LimitReached(RuntimeError):
     """A daily limit is spent; the message says which and when it resets."""
+
+
+def unlimited(username: str, listed: str) -> bool:
+    """Whether this sign-in name (``<idp>:<name>``, e.g. ``google:someone@example.com``) is one of
+    the comma-separated ``EKOS_AI_UNLIMITED_USERS``: its questions are neither limited nor counted."""
+    names = {n.strip().lower() for n in listed.split(",") if n.strip()}
+    return bool(username) and username.strip().lower() in names
 
 
 def today() -> str:

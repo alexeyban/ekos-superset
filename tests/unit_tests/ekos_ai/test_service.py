@@ -260,3 +260,15 @@ def test_direct_limit_and_no_sql_are_plain_answers(app, wired):
     _, ran = wired(FakeEkos(generated={"status": "no_sql", "sql": None}, generate_takes_tables=True), [])
     r = service.text_to_sql("revenue per customer")
     assert r["status"] == "impossible" and ran == []
+
+
+def test_an_unlimited_user_spends_no_question(app, monkeypatch):
+    from types import SimpleNamespace
+    from flask import g
+
+    app.config["EKOS_AI_UNLIMITED_USERS"] = "google:owner@example.com"
+    spent = []
+    monkeypatch.setattr(service.quota, "spend", lambda *a, **k: spent.append(1) or {})
+    g.user = SimpleNamespace(id=1, username="google:owner@example.com")
+    assert service._spend_question() == {"yours": "no limit", "everyone": "not counted"}
+    assert spent == []

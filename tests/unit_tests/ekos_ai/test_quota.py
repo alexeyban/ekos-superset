@@ -25,3 +25,11 @@ def test_instance_limit_and_a_refusal_spends_nothing(engine):
         quota.spend(engine, "d", per_user=5, per_instance=3, day="d")
     # The refused person spent nothing: with room again they have all five.
     assert quota.spend(engine, "d", per_user=5, per_instance=10, day="d")["yours"] == 4
+
+
+def test_listed_sign_ins_are_unlimited_case_insensitive():
+    listed = "github:alexeyban, google:Alexeyban@gmail.com"
+    assert quota.unlimited("google:alexeyban@gmail.com", listed)
+    assert quota.unlimited("GITHUB:alexeyban", listed)
+    assert not quota.unlimited("google:someone@example.com", listed)
+    assert not quota.unlimited("", listed) and not quota.unlimited("github:alexeyban", "")
