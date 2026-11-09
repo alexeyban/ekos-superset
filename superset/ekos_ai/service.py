@@ -185,7 +185,8 @@ class Context:
         return checked, report
 
 
-def _ask(system: str, user: str, dialect: str, client=None, step: str = "model drafts") -> dict:
+def _ask(system: str, user: str, dialect: str, client=None, step: str = "model drafts",
+         max_tokens: int = 1500) -> dict:
     ekos_mcp.step_started(getattr(client, "log", None),
                           {"step": step, "tool": f"model {cfg('EKOS_AI_MODEL')} (Superset, not EKOS)"})
     started = time.monotonic()
@@ -193,13 +194,16 @@ def _ask(system: str, user: str, dialect: str, client=None, step: str = "model d
         answer = llm.complete(
             system.format(dialect=dialect), user, model=cfg("EKOS_AI_MODEL"),
             base_url=cfg("EKOS_AI_BASE_URL"), key_env=cfg("EKOS_AI_KEY_ENV", "ANTHROPIC_API_KEY"),
+            max_tokens=max_tokens,
         )
     except llm.ModelError as err:
         _log_model(client, step, started, False, str(err))
         raise
     sql = " ".join(str(answer.get("sql") or "").split())
+    retried = answer.pop("_attempts", 1) > 1
     _log_model(client, step, started, True,
-               f"status {answer.get('status')}" + (f"; SQL: {sql[:200]}" if sql else ""))
+               f"status {answer.get('status')}" + (f"; SQL: {sql[:200]}" if sql else "")
+               + ("; asked twice: the first reply was cut off" if retried else ""))
     return answer
 
 
@@ -463,8 +467,9 @@ def text_to_dashboard(question: str) -> dict:
     if not ctx.names:
         return _no_tables(ctx)
     left = _spend_question()  # after EKOS answered, before any model call
+    # Several charts, each with its SQL: more room than one query needs.
     proposal = _ask(DASH_SYSTEM, ctx.prompt(question), ctx.dialect, ctx.client,
-                    "model designs the charts from EKOS's schema")
+                    "model designs the charts from EKOS's schema", max_tokens=4000)
     if proposal.get("status") != "ok":
         return _not_ok(proposal, ctx)
     specs = proposal.get("charts")
