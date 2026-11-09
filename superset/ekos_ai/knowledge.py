@@ -275,14 +275,14 @@ def grounding(catalog: Catalog, used: tuple[str, ...], report: dict | None) -> d
 
 
 def load(client: EkosClient, *, allowed: set[str] | None, database: str = "",
-         status: str = "confirmed") -> Catalog:
+         status: str = "confirmed", step: str = "read the compiled schema") -> Catalog:
     """EKOS's compiled schema, cached for a few minutes per endpoint."""
     key = (client.url, database, status, tuple(sorted(allowed or ())))
     hit = _CACHE.get(key)
     if hit and time.time() - hit[0] < _TTL:
         log = getattr(client, "log", None)
         if isinstance(log, list):
-            log.append({"step": "read the compiled schema", "tool": "ekos_ossie_export", "ok": True,
+            log.append({"step": step, "tool": "ekos_ossie_export", "ok": True,
                         "ms": 0, "summary": f"{len(hit[1].tables)} tables, {len(hit[1].joins)} "
                         f"joins — from EKOS {int(time.time() - hit[0])} s ago (cached)"})
         return hit[1]
@@ -293,7 +293,7 @@ def load(client: EkosClient, *, allowed: set[str] | None, database: str = "",
         # EKOS 1.4.3+: exactly these tables in one call (an older EKOS ignores `names` and the
         # per-table fallback below fills the gaps).
         args["names"] = sorted(allowed)
-    first = client.call("ekos_ossie_export", args, step="read the compiled schema")
+    first = client.call("ekos_ossie_export", args, step=step)
     catalog = catalog_from_ossie(first, allowed)
     if catalog.truncated and allowed:
         # The export stopped at MAX_DATASETS: fetch each allowed table it left out, then build

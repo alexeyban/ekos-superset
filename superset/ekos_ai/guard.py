@@ -90,6 +90,24 @@ def check_sql(
     return Checked(sql=root.sql(dialect=dialect), tables=tuple(sorted(set(used))))
 
 
+def tables_in(sql: str, *, dialect: str = "postgres") -> set[str]:
+    """The tables a query reads (lower case, without schema; CTE names left out). Raises Refused
+    when it does not parse — used to fetch only those tables' schema before ``check_sql``."""
+    text = (sql or "").strip().rstrip(";").strip()
+    try:
+        statements = [s for s in sqlglot.parse(text, read=dialect) if s is not None]
+    except sqlglot.errors.ParseError as err:
+        raise Refused(f"The SQL does not parse: {str(err)[:160]}") from err
+    names: set[str] = set()
+    for root in statements:
+        ctes = {c.alias_or_name.lower() for c in root.find_all(exp.CTE)}
+        for table in root.find_all(exp.Table):
+            name = (table.name or "").lower()
+            if name and not (name in ctes and not table.db):
+                names.add(name)
+    return names
+
+
 _TAG = re.compile(r"[<>]")
 
 

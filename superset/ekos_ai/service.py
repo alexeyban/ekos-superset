@@ -152,6 +152,22 @@ class Context:
             self.names = sorted(self.catalog.tables)
         self.rules = knowledge.dialect_notes(client, self.dialect)
 
+    @classmethod
+    def for_tables(cls, client, names: set[str]) -> "Context":
+        """Only the schema of the tables a written query uses — for the guard's column check and
+        the "From EKOS" panel, when EKOS's agent wrote the SQL (no search, no whole export)."""
+        ctx = cls.__new__(cls)
+        ctx.client = client
+        ctx.dialect = _dialect()
+        ctx.catalog = knowledge.load(
+            client, allowed=set(names), database=cfg("EKOS_MCP_DATABASE", "") or "",
+            status=cfg("EKOS_MCP_STATUS", "confirmed") or "confirmed",
+            step="read the schema of the tables the SQL uses",
+        )
+        ctx.names = sorted(ctx.catalog.tables)
+        ctx.rules = []
+        return ctx
+
     def prompt(self, question: str) -> str:
         rules = "\n".join(f"- {r}" for r in self.rules)
         return (
@@ -270,25 +286,37 @@ def _spend_question() -> dict:
 GENERATE_TOOL = "ekos_sql_generate"
 
 
-def generated_by_ekos(ctx: Context, question: str, max_rows: int) -> dict:
-    """RFC 0250: EKOS's own agent writes the SQL (`ekos_sql_generate`); Superset only applies its
-    read-only guard to it. The model's text never reaches the database unchecked."""
-    args: dict[str, Any] = {"question": question[:2000], "dialect": ctx.dialect}
+def _ask_ekos(client, question: str, dialect: str, tables: list[str] | None) -> dict:
+    """RFC 0250: EKOS's own agent writes the SQL (`ekos_sql_generate`); with `tables` (EKOS
+    1.4.4+) it sees only the tables questions may use."""
+    args: dict[str, Any] = {"question": question[:2000], "dialect": dialect}
     if cfg("EKOS_MCP_DATABASE"):
         args["database"] = cfg("EKOS_MCP_DATABASE")
-    allowed = _allowed()
-    accepts = getattr(ctx.client, "accepts", None)
-    if allowed and callable(accepts) and accepts(GENERATE_TOOL, "tables"):
-        # EKOS 1.4.4+: the agent sees only the tables questions may use.
-        args["tables"] = sorted(allowed)
-    result = ctx.client.call(GENERATE_TOOL, args, step="EKOS writes the SQL (its own agent)")
-    status, sql = result.get("status"), result.get("sql")
-    if status == "limit":
-        return {"status": "failed", "explanation": str(result.get("reason", "EKOS's daily limit is reached."))[:300]}
-    if not sql:
+    if tables:
+        args["tables"] = tables
+    return client.call(GENERATE_TOOL, args, step="EKOS writes the SQL (its own agent)")
+
+
+def _takes_tables(client) -> bool:
+    accepts = getattr(client, "accepts", None)
+    return callable(accepts) and accepts(GENERATE_TOOL, "tables")
+
+
+def _unanswered(result: dict) -> dict | None:
+    """EKOS's limit or no SQL, as a plain answer; None when there is SQL to check."""
+    if result.get("status") == "limit":
+        return {"status": "failed",
+                "explanation": str(result.get("reason", "EKOS's daily limit is reached."))[:300]}
+    if not result.get("sql"):
         return {"status": "impossible",
-                "explanation": "EKOS's SQL agent could not write a query for this question.",
-                "ekos": knowledge.grounding(ctx.catalog, tuple(ctx.names), None)}
+                "explanation": "EKOS's SQL agent could not write a query for this question."}
+    return None
+
+
+def _accept(ctx: Context, result: dict, max_rows: int) -> dict:
+    """Superset's read-only guard over EKOS's SQL. The model's text never reaches the database
+    unchecked."""
+    sql = result.get("sql")
     try:
         checked = guard.check_sql(sql, ctx.catalog.columns(),
                                   dialect=_SQLGLOT.get(ctx.dialect, ctx.dialect), max_rows=max_rows,
@@ -306,25 +334,82 @@ def generated_by_ekos(ctx: Context, question: str, max_rows: int) -> dict:
                            + (f" Open findings: {', '.join(open_findings)}." if open_findings else "")}
 
 
+def generated_by_ekos(ctx: Context, question: str, max_rows: int) -> dict:
+    """EKOS writes the SQL after Superset loaded the allowed tables (an EKOS without `tables`)."""
+    allowed = _allowed()
+    tables = sorted(allowed) if allowed and _takes_tables(ctx.client) else None
+    result = _ask_ekos(ctx.client, question, ctx.dialect, tables)
+    plain = _unanswered(result)
+    if plain is not None:
+        if plain["status"] == "impossible":
+            plain["ekos"] = knowledge.grounding(ctx.catalog, tuple(ctx.names), None)
+        return plain
+    return _accept(ctx, result, max_rows)
+
+
+def _generated_directly(client, question: str, allowed: set[str], max_rows: int):
+    """EKOS 1.4.4+: the question goes straight to EKOS's agent with the allowed tables — no
+    search and no whole-schema export first — and only the tables its SQL uses are then read,
+    for the guard's column check and the panel. Returns (answer, context or None)."""
+    result = _ask_ekos(client, question, _dialect(), sorted(allowed))
+    plain = _unanswered(result)
+    if plain is not None:
+        return plain, None
+    sql = str(result.get("sql"))
+    try:
+        used = guard.tables_in(sql, dialect=_SQLGLOT.get(_dialect(), _dialect()))
+    except guard.Refused as err:
+        return {"status": "refused", "sql": sql[:2000], "explanation": str(err)}, None
+    outside = sorted(used - allowed)
+    if outside or not used:
+        why = (f"The table {outside[0]} is not one you may query." if outside
+               else "The query reads no table.")
+        return {"status": "refused", "sql": sql[:2000], "explanation": why}, None
+    ctx = Context.for_tables(client, used)
+    return _accept(ctx, result, max_rows), ctx
+
+
+def _fall_back(ctx: Context, refused: dict, question: str, max_rows: int) -> dict:
+    """EKOS's SQL used a table questions may not: draft over the allowed tables instead, still
+    checked by EKOS. Nothing refused ever runs."""
+    ctx.client.log.append({"step": "EKOS's SQL used a table outside the allowed ones; "
+                                   "drafting over the allowed tables instead",
+                           "ok": False, "error": refused.get("explanation", "")[:300]})
+    return draft_sql(ctx, question, max_rows)
+
+
 def text_to_sql(question: str) -> dict:
-    ctx = Context(_client(), question)
+    client = _client()
+    max_rows = int(cfg("EKOS_AI_MAX_ROWS", 200))
+    allowed = _allowed()
+    if allowed and GENERATE_TOOL in client.tools() and _takes_tables(client):
+        left = _spend_question()  # after EKOS answered, before any model call
+        drafted, ctx = _generated_directly(client, question, allowed, max_rows)
+        if drafted["status"] == "refused":
+            ctx = Context(client, question)
+            if not ctx.names:
+                return {**_no_tables(ctx), "remaining": left}
+            drafted = _fall_back(ctx, drafted, question, max_rows)
+        if drafted["status"] != "ok":
+            return {**drafted, "remaining": left}
+        return _finish(ctx, drafted, left, max_rows)
+    ctx = Context(client, question)
     if not ctx.names:
         return _no_tables(ctx)
     left = _spend_question()  # after EKOS answered, before any model call
-    max_rows = int(cfg("EKOS_AI_MAX_ROWS", 200))
     if GENERATE_TOOL in ctx.client.tools():
         drafted = generated_by_ekos(ctx, question, max_rows)
         if drafted["status"] == "refused":
-            # EKOS's agent used a table questions may not (an EKOS without `tables` sees every
-            # compiled table): draft over the allowed tables instead, still checked by EKOS.
-            ctx.client.log.append({"step": "EKOS's SQL used a table outside the allowed ones; "
-                                           "drafting over the allowed tables instead",
-                                   "ok": False, "error": drafted.get("explanation", "")[:300]})
-            drafted = draft_sql(ctx, question, max_rows)
+            drafted = _fall_back(ctx, drafted, question, max_rows)
     else:
         drafted = draft_sql(ctx, question, max_rows)
     if drafted["status"] != "ok":
         return {**drafted, "remaining": left}
+    return _finish(ctx, drafted, left, max_rows)
+
+
+def _finish(ctx: Context, drafted: dict, left: dict, max_rows: int) -> dict:
+    """Run the checked SQL (read-only) and answer with its rows and EKOS's grounding."""
     checked, report = drafted["checked"], drafted["report"]
     ekos = knowledge.grounding(ctx.catalog, checked.tables, report)
     ekos["author"] = drafted.get("author", "model, checked by EKOS")

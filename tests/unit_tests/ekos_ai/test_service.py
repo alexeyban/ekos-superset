@@ -220,3 +220,43 @@ def test_the_model_and_the_database_steps_are_announced_before_they_end(app, wir
     for label in ("model drafts", "run the checked SQL"):
         kinds = [e["type"] for e in heard if label in e["entry"].get("step", "")]
         assert kinds[:2] == ["start", "step"], (label, kinds)
+
+
+def test_a_direct_question_skips_search_and_reads_only_the_tables_used(app, wired):
+    app.config["EKOS_AI_TABLES"] = "customer,store_sales,item"
+    ekos = FakeEkos(generated={"status": "ok", "sql": OK_SQL, "open_findings": [],
+                               "checked": "checked against pg, read-only"},
+                    generate_takes_tables=True)
+    prompts, ran = wired(ekos, [])
+    r = service.text_to_sql("revenue per customer")
+    assert r["status"] == "ok" and prompts == [] and len(ran) == 1
+    tools = ekos.called()
+    assert "ekos_search" not in tools, "no search when EKOS writes the SQL"
+    assert tools.index("ekos_sql_generate") < tools.index("ekos_ossie_export"), "SQL first"
+    sent = [a for t, a in ekos.calls if t == "ekos_sql_generate"][0]
+    assert sent["tables"] == ["customer", "item", "store_sales"]
+    export = [a for t, a in ekos.calls if t == "ekos_ossie_export"][0]
+    assert export["names"] == ["customer", "store_sales"], "only the tables the SQL uses"
+    assert r["ekos"]["author"] == "ekos"
+    assert {t["name"] for t in r["ekos"]["tables"]} == {"customer", "store_sales"}
+
+
+def test_a_direct_query_outside_the_allowed_tables_falls_back_and_never_runs(app, wired):
+    app.config["EKOS_AI_TABLES"] = "customer,store_sales"
+    ekos = FakeEkos(generated={"status": "ok", "sql": "select * from item"},
+                    generate_takes_tables=True)
+    prompts, ran = wired(ekos, [{"status": "ok", "sql": OK_SQL}])
+    r = service.text_to_sql("revenue per customer")
+    assert r["status"] == "ok" and len(prompts) == 1
+    assert len(ran) == 1 and "item" not in ran[0].lower()
+    assert any("outside the allowed" in e["step"] for e in ekos.log)
+
+
+def test_direct_limit_and_no_sql_are_plain_answers(app, wired):
+    app.config["EKOS_AI_TABLES"] = "customer,store_sales"
+    _, ran = wired(FakeEkos(generated={"status": "limit", "sql": None, "reason": "the daily limit of 50"},
+                            generate_takes_tables=True), [])
+    assert "daily limit of 50" in service.text_to_sql("revenue per customer")["explanation"]
+    _, ran = wired(FakeEkos(generated={"status": "no_sql", "sql": None}, generate_takes_tables=True), [])
+    r = service.text_to_sql("revenue per customer")
+    assert r["status"] == "impossible" and ran == []

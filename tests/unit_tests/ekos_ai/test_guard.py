@@ -59,3 +59,10 @@ def test_tables_are_put_in_the_source_schema():
 def test_a_cte_keeps_its_name_when_requalifying():
     r = check_sql("with o as (select * from c_order) select count(*) from o", T, schema="bronze_adempiere")
     assert "FROM o" in r.sql and "bronze_adempiere.c_order" in r.sql
+
+
+def test_tables_in_names_every_table_but_ctes():
+    from superset.ekos_ai.guard import tables_in
+    sql = ("with t as (select * from store_sales) "
+           "select c.c_last_name from t join public.Customer c on true")
+    assert tables_in(sql) == {"store_sales", "customer"}
