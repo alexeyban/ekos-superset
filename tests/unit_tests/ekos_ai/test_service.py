@@ -135,10 +135,31 @@ def test_generated_sql_still_passes_the_read_only_guard(app, wired):
     ekos = FakeEkos(generated={"status": "ok", "sql": "delete from customer"})
     prompts, ran = wired(ekos, [{"status": "ok", "sql": OK_SQL}])
     r = service.text_to_sql("revenue per customer")
-    # Refused, then drafted over the allowed tables and checked by EKOS: the delete never runs.
-    assert r["status"] == "ok" and len(prompts) == 1
-    assert len(ran) == 1 and "delete" not in ran[0].lower()
-    assert any("outside the allowed" in e["step"] for e in ekos.log)
+    # A write is the answer, not a reason to try again: nothing runs, no model is asked.
+    assert r["status"] == "refused" and "SELECT" in r["explanation"]
+    assert prompts == [] and ran == []
+    assert any(e["step"].startswith("refused") for e in ekos.log)
+
+
+def test_a_direct_write_is_refused_plainly(app, wired):
+    app.config["EKOS_AI_TABLES"] = "customer,store_sales"
+    ekos = FakeEkos(generated={"status": "open_findings", "sql": "DELETE FROM customer"},
+                    generate_takes_tables=True)
+    prompts, ran = wired(ekos, [{"status": "ok", "sql": OK_SQL}])
+    r = service.text_to_sql("delete every customer")
+    assert r["status"] == "refused" and prompts == [] and ran == []
+    assert not any("outside the allowed" in e["step"] for e in ekos.log)
+
+
+def test_an_ekos_refusal_is_the_answer(app, wired):
+    app.config["EKOS_AI_TABLES"] = "customer,store_sales"
+    ekos = FakeEkos(generated={"status": "refused", "sql": None,
+                               "reason": "EKOS writes read-only SELECT queries only"},
+                    generate_takes_tables=True)
+    prompts, ran = wired(ekos, [])
+    r = service.text_to_sql("delete every customer")
+    assert r["status"] == "refused" and "read-only" in r["explanation"]
+    assert prompts == [] and ran == [] and "ekos_ossie_export" not in ekos.called()
 
 
 def test_a_refused_ekos_query_falls_back_and_a_failed_draft_says_why(app, wired):

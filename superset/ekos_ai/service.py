@@ -309,6 +309,10 @@ def _unanswered(result: dict) -> dict | None:
     if result.get("status") == "limit":
         return {"status": "failed",
                 "explanation": str(result.get("reason", "EKOS's daily limit is reached."))[:300]}
+    if result.get("status") == "refused":
+        # EKOS 1.4.5+: the question asks for a change (EKOS writes read-only SELECTs only).
+        return {"status": "refused",
+                "explanation": str(result.get("reason", "EKOS refused this question."))[:300]}
     if not result.get("sql"):
         return {"status": "impossible",
                 "explanation": "EKOS's SQL agent could not write a query for this question."}
@@ -324,7 +328,8 @@ def _accept(ctx: Context, result: dict, max_rows: int) -> dict:
                                   dialect=_SQLGLOT.get(ctx.dialect, ctx.dialect), max_rows=max_rows,
                                   schema=_requalify_to())
     except guard.Refused as err:
-        return {"status": "refused", "sql": str(sql)[:2000], "explanation": str(err)}
+        return {"status": "refused", "sql": str(sql)[:2000], "explanation": str(err),
+                "retry_allowed": _outside_tables(err)}
     open_findings = [str(f) for f in result.get("open_findings") or []]
     report = {
         "note": str(result.get("checked", "")),
@@ -366,9 +371,17 @@ def _generated_directly(client, question: str, allowed: set[str], max_rows: int)
     if outside or not used:
         why = (f"The table {outside[0]} is not one you may query." if outside
                else "The query reads no table.")
-        return {"status": "refused", "sql": sql[:2000], "explanation": why}, None
+        return {"status": "refused", "sql": sql[:2000], "explanation": why,
+                "retry_allowed": bool(outside)}, None
     ctx = Context.for_tables(client, used)
     return _accept(ctx, result, max_rows), ctx
+
+
+def _outside_tables(err: guard.Refused) -> bool:
+    """Whether the guard refused EKOS's SQL only for a table questions may not use — the one
+    refusal worth a second attempt over the allowed tables. A write, a forbidden function or a
+    parse error is the answer."""
+    return "is not one you may query" in str(err)
 
 
 def _fall_back(ctx: Context, refused: dict, question: str, max_rows: int) -> dict:
@@ -380,6 +393,15 @@ def _fall_back(ctx: Context, refused: dict, question: str, max_rows: int) -> dic
     return draft_sql(ctx, question, max_rows)
 
 
+def _refused_plainly(client, refused: dict) -> dict:
+    """A refusal that is the answer (a write, a forbidden function): logged with its reason."""
+    log = getattr(client, "log", None)
+    if isinstance(log, list):
+        log.append({"step": "refused: nothing was run", "ok": False,
+                    "error": refused.get("explanation", "")[:300]})
+    return {k: v for k, v in refused.items() if k != "retry_allowed"}
+
+
 def text_to_sql(question: str) -> dict:
     client = _client()
     max_rows = int(cfg("EKOS_AI_MAX_ROWS", 200))
@@ -387,6 +409,8 @@ def text_to_sql(question: str) -> dict:
     if allowed and GENERATE_TOOL in client.tools() and _takes_tables(client):
         left = _spend_question()  # after EKOS answered, before any model call
         drafted, ctx = _generated_directly(client, question, allowed, max_rows)
+        if drafted["status"] == "refused" and not drafted.get("retry_allowed"):
+            return {**_refused_plainly(client, drafted), "remaining": left}
         if drafted["status"] == "refused":
             ctx = Context(client, question)
             if not ctx.names:
@@ -401,8 +425,10 @@ def text_to_sql(question: str) -> dict:
     left = _spend_question()  # after EKOS answered, before any model call
     if GENERATE_TOOL in ctx.client.tools():
         drafted = generated_by_ekos(ctx, question, max_rows)
-        if drafted["status"] == "refused":
+        if drafted["status"] == "refused" and drafted.get("retry_allowed"):
             drafted = _fall_back(ctx, drafted, question, max_rows)
+        elif drafted["status"] == "refused":
+            drafted = _refused_plainly(ctx.client, drafted)
     else:
         drafted = draft_sql(ctx, question, max_rows)
     if drafted["status"] != "ok":
