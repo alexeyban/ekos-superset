@@ -6,6 +6,9 @@ import json
 import re
 from typing import Any
 
+import sqlglot
+from sqlglot import exp
+
 VIZ = {
     "bar": "echarts_timeseries_bar",
     "line": "echarts_timeseries_line",
@@ -40,6 +43,15 @@ def _column(spec: dict, key: str, columns: list[str], *, required: bool) -> str 
     return found
 
 
+def _aggregates(sql: str) -> bool:
+    """Whether the query groups at its top level (its rows are already totals)."""
+    try:
+        root = sqlglot.parse_one(sql or "", read="postgres")
+    except sqlglot.errors.ParseError:
+        return False
+    return isinstance(root, exp.Select) and root.args.get("group") is not None
+
+
 def form_data(spec: dict, columns: list[str], dataset_id: int) -> tuple[str, dict]:
     """The viz type and params of one chart; raises BadSpec for anything not in the vocabulary."""
     viz = VIZ.get(str(spec.get("viz", "")).lower())
@@ -53,6 +65,14 @@ def form_data(spec: dict, columns: list[str], dataset_id: int) -> tuple[str, dic
     if kind == "table":
         return viz, {**base, "query_mode": "raw", "all_columns": columns[:20], "row_limit": 200}
     metric_col = _column(spec, "metric", columns, required=agg != "COUNT")
+    if metric_col is None and agg == "COUNT" and _aggregates(str(spec.get("sql", ""))):
+        # The SQL already counted (one row per group): counting its rows would draw 1 for every
+        # group. Its one value column is the measure.
+        keys = {str(spec.get(k, "")).lower() for k in ("x", "group_by")}
+        values = [c for c in columns if c.lower() not in keys]
+        if len(values) != 1:
+            raise BadSpec("The SQL already aggregates: name the column to chart as 'metric'.")
+        metric_col, agg = values[0], "SUM"
     if metric_col is None:
         metric: dict[str, Any] = {
             "expressionType": "SQL", "sqlExpression": "COUNT(*)", "label": "Count",
