@@ -30,6 +30,27 @@ def admin_names(raw: str) -> list[str]:
     return [n.strip().lower() for n in raw.split(",") if n.strip()]
 
 
+def _disconnect(db, sm, role, name: str) -> None:  # pragma: no cover - a real metadata database
+    """The lakehouse is off (no EKOS_TRINO_URI): remove the connection this script made, and the
+    public role's access to it — unless a dataset still uses it, which is then left as it is."""
+    from superset.connectors.sqla.models import SqlaTable
+    from superset.models.core import Database
+
+    stale = db.session.query(Database).filter_by(database_name=name).one_or_none()
+    if stale is None:
+        return
+    used = db.session.query(SqlaTable).filter_by(database_id=stale.id).count()
+    if used:
+        print(f"database {name!r} kept: {used} dataset(s) use it")
+        return
+    pv = sm.find_permission_view_menu("database_access", stale.perm)
+    if pv is not None and pv in role.permissions:
+        sm.del_permission_role(role, pv)
+    db.session.delete(stale)
+    db.session.flush()
+    print(f"database {name!r} removed (the lakehouse is off)")
+
+
 def main() -> None:  # pragma: no cover - runs against a real metadata database
     from superset.app import create_app
 
@@ -56,6 +77,8 @@ def main() -> None:  # pragma: no cover - runs against a real metadata database
                                         allow_dml=False))
                 db.session.flush()
                 print(f"database {trino_name!r} created")
+        else:
+            _disconnect(db, sm, role, trino_name)
         for name in [os.environ.get("EKOS_AI_DATABASE", "")] + ([trino_name] if trino_uri else []):
             if not name:
                 continue

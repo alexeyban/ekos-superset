@@ -11,6 +11,7 @@ from flask_appbuilder.api import expose, protect, safe
 from flask_appbuilder.security.decorators import has_access
 
 from superset.ekos_ai import ekos_mcp, guard, llm, quota, service
+from superset.ekos_ai.live import stream
 from superset.views.base_api import BaseSupersetApi, statsd_metrics
 
 logger = logging.getLogger(__name__)
@@ -55,24 +56,30 @@ class EkosAIRestApi(BaseSupersetApi):
             result["ekos_log"] = client.log
         return result
 
-    def _answer(self, fn, text):
+    def _outcome(self, fn, text) -> dict:
+        """The answer, or why there is none — always a result the page can show."""
         try:
-            return self.response(200, result=self._with_log(fn(text)))
+            return self._with_log(fn(text))
         except (llm.ModelError, guard.Refused, quota.LimitReached) as err:
-            return self.response(200, result=self._with_log(
-                {"status": "failed", "explanation": str(err)}))
+            return self._with_log({"status": "failed", "explanation": str(err)})
         except ekos_mcp.EkosUnavailable as err:
             # No fallback to the database's own catalog: questions are answered from EKOS only.
             logger.warning("ekos_ai: EKOS unavailable: %s %s", err, err.detail)
-            return self.response(200, result=self._with_log({
+            return self._with_log({
                 "status": "failed",
                 "explanation": f"{err} Questions are answered only from EKOS's compiled "
                                "knowledge, so this one was not answered.",
                 "ekos_error": err.detail,
-            }))
+            })
         except Exception:  # noqa: BLE001 - logged, and the person gets a plain message
             logger.exception("ekos_ai failed")
-            return self.response(500, message="The question could not be answered.")
+            return self._with_log({"status": "failed",
+                                   "explanation": "The question could not be answered."})
+
+    def _answer(self, fn, text):
+        if (request.get_json(silent=True) or {}).get("stream"):
+            return stream(lambda: self._outcome(fn, text))
+        return self.response(200, result=self._outcome(fn, text))
 
     @expose("/sql", methods=("POST",))
     @protect()

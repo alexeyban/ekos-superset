@@ -183,3 +183,15 @@ def test_a_source_overrides_database_schema_and_dialect(app, wired):
     assert ("ekos_sql_check", "trino") in [(t, a.get("dialect")) for t, a in ekos.calls if "sql" in a]
     with pytest.raises(service.guard.Refused):
         service.select_source("nope")
+
+
+def test_the_model_and_the_database_steps_are_announced_before_they_end(app, wired):
+    ekos = FakeEkos()
+    ekos.log = ekos_mcp.StepLog()
+    heard = []
+    ekos.log.listener = heard.append
+    wired(ekos, [{"status": "ok", "sql": OK_SQL}])
+    service.text_to_sql("revenue per customer")
+    for label in ("model drafts", "run the checked SQL"):
+        kinds = [e["type"] for e in heard if label in e["entry"].get("step", "")]
+        assert kinds[:2] == ["start", "step"], (label, kinds)

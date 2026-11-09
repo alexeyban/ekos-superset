@@ -75,12 +75,49 @@ def _summary(tool: str, value: dict) -> str:
     return ", ".join(f"{k}={str(v)[:40]}" for k, v in list(value.items())[:4])
 
 
+class StepLog(list):
+    """The log of one question. A ``listener`` (the page's live view) hears each step when it
+    starts (``start``, the index it will take) and whenever it is recorded or completed (``step``).
+    A listener that fails is ignored: the log never stops an answer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.listener: Callable[[dict], None] | None = None
+
+    def _tell(self, kind: str, index: int, entry: dict) -> None:
+        if self.listener is None:
+            return
+        try:
+            self.listener({"type": kind, "i": index, "entry": dict(entry)})
+        except Exception:  # noqa: BLE001 - the live view is a convenience, the answer is not
+            self.listener = None
+
+    def started(self, entry: dict) -> None:
+        """A step is under way; it will be appended at the current length."""
+        self._tell("start", len(self), entry)
+
+    def append(self, entry: dict) -> None:  # type: ignore[override]
+        super().append(entry)
+        self._tell("step", len(self) - 1, entry)
+
+    def changed(self) -> None:
+        """The last step gained its summary, notes or error."""
+        if self:
+            self._tell("step", len(self) - 1, self[-1])
+
+
+def step_started(log: Any, entry: dict) -> None:
+    """Announce a step on a log that can (a plain list, e.g. a test's, cannot)."""
+    if isinstance(log, StepLog):
+        log.started(entry)
+
+
 class EkosClient:
     """A thin MCP client: ``call(tool, arguments)`` returns the tool's JSON result."""
 
     def __init__(self, url: str, *, token: str = "", timeout: float = 30.0,
                  post: Post | None = None) -> None:
-        self.log: list[dict] = []
+        self.log: StepLog = StepLog()
         if not url:
             raise EkosUnavailable("EKOS is not configured.", {
                 "step": "configuration", "cause": "EKOS_MCP_URL is empty",
@@ -123,6 +160,8 @@ class EkosClient:
         if method == "tools/call" and params:
             entry["tool"] = params.get("name")
             entry["arguments"] = json.dumps(params.get("arguments") or {}, ensure_ascii=False)[:_ARGS_SHOWN]
+        if not notify:
+            self.log.started(entry)
         started = time.monotonic()
         try:
             response = self._post(self.url, headers=self._headers(), json=message,
@@ -188,6 +227,7 @@ class EkosClient:
         names = {str(t.get("name")) for t in result.get("tools", []) if t.get("name")}
         self.log[-1]["summary"] = f"{len(names)} tools" + (
             "; ekos_sql_generate offered" if "ekos_sql_generate" in names else "")
+        self.log.changed()
         return names
 
     def call(self, tool: str, arguments: dict | None = None, *, step: str = "") -> dict:
@@ -205,6 +245,7 @@ class EkosClient:
             entry["notes"] = [n[:300] for n in notes]
         if result.get("isError"):
             entry.update(ok=False, error=text[:300] or "error")
+            self.log.changed()
             raise EkosUnavailable(f"EKOS could not answer ({tool}).", {
                 "step": entry["step"], "endpoint": self.endpoint, "cause": text[:300] or "error",
                 "hint": "EKOS reported an error for this request.", "elapsed_ms": entry.get("ms"),
@@ -216,6 +257,7 @@ class EkosClient:
         if not isinstance(value, dict):
             value = {"value": value}
         entry["summary"] = _summary(tool, value)
+        self.log.changed()
         return value
 
 

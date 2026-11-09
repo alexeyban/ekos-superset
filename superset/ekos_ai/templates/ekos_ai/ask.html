@@ -14,11 +14,12 @@
     <button id="dash" class="btn btn-default">Build a dashboard</button>
     <span id="busy" class="text-muted" style="margin-left:10px"></span>
   </p>
+  <div id="live"></div>
   <div id="out"></div>
 </div>
 <script>
 (function () {
-  var out = document.getElementById("out"), busy = document.getElementById("busy");
+  var out = document.getElementById("out"), busy = document.getElementById("busy"), live = document.getElementById("live");
   function el(tag, text, cls) { var e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
   function render(r) {
     out.replaceChildren();
@@ -52,28 +53,54 @@
     out.appendChild(box);
   }
   // Every call behind the answer, in order: what EKOS was asked, how long it took, what came back.
-  function renderLog(log) {
+  function renderLog(log, target, title) {
     var box = el("div", undefined, "panel panel-default");
     var head = el("div", undefined, "panel-heading");
     var total = log.reduce(function (s, x) { return s + (x.ms || 0); }, 0);
-    head.appendChild(el("strong", "How EKOS answered: " + log.length + " steps, " + (total / 1000).toFixed(1) + " s"));
+    head.appendChild(el("strong", (title || "How EKOS answered") + ": " + log.length + " steps, " + (total / 1000).toFixed(1) + " s"));
     box.appendChild(head);
     var t = el("table", undefined, "table table-condensed small"), h = el("tr");
     ["#", "Step", "EKOS tool / call", "Arguments", "Time", "Result"].forEach(function (c) { h.appendChild(el("th", c)); });
     t.appendChild(h);
     log.forEach(function (x, i) {
-      var tr = el("tr", undefined, x.ok === false ? "danger" : "");
+      if (!x) return;
+      var tr = el("tr", undefined, x.ok === false ? "danger" : (x.running ? "info" : ""));
       tr.appendChild(el("td", String(i + 1)));
       tr.appendChild(el("td", x.step || ""));
       tr.appendChild(el("td", x.tool || x.method || ""));
       var args = el("td"); if (x.arguments && x.arguments !== "{}") args.appendChild(el("code", x.arguments)); tr.appendChild(args);
-      tr.appendChild(el("td", x.ms !== undefined ? x.ms + " ms" : ""));
-      tr.appendChild(el("td", x.ok === false ? "failed: " + (x.error || "") : (x.summary || "ok") + ((x.notes || []).length ? " — EKOS note: " + x.notes.join(" ") : "")));
+      tr.appendChild(el("td", x.running ? ((Date.now() - x.since) / 1000).toFixed(1) + " s…" : (x.ms !== undefined ? x.ms + " ms" : "")));
+      tr.appendChild(el("td", x.running ? "running…" : x.ok === false ? "failed: " + (x.error || "") : (x.summary || "ok") + ((x.notes || []).length ? " — EKOS note: " + x.notes.join(" ") : "")));
       t.appendChild(tr);
     });
     var wrap = el("div"); wrap.style.overflowX = "auto"; wrap.appendChild(t);
     box.appendChild(wrap);
-    out.appendChild(box);
+    (target || out).appendChild(box);
+  }
+  // The steps of the question being answered, as EKOS reports them (start, then result).
+  var steps = [], ticker = null;
+  function showLive() {
+    live.replaceChildren();
+    if (steps.length) renderLog(steps, live, "EKOS is working");
+    var now = steps.filter(function (x) { return x && x.running; }).pop();
+    busy.textContent = now ? "Working: " + now.step + "…" : "Working…";
+  }
+  function onEvent(e) {
+    if (e.type === "start") { steps[e.i] = Object.assign({running: true, since: Date.now()}, e.entry); showLive(); }
+    else if (e.type === "step") { steps[e.i] = e.entry; showLive(); }
+    else if (e.type === "result") { live.replaceChildren(); render(e.result); return true; }
+    return false;
+  }
+  async function readStream(res) {
+    var reader = res.body.getReader(), dec = new TextDecoder(), buf = "", done = false;
+    while (!done) {
+      var part = await reader.read();
+      if (part.done) break;
+      buf += dec.decode(part.value, {stream: true});
+      var lines = buf.split("\n"); buf = lines.pop();
+      lines.forEach(function (l) { if (l.trim() && !done) done = onEvent(JSON.parse(l)); });
+    }
+    if (!done) render({status: "failed", explanation: "The answer stream ended early.", ekos_log: steps.filter(Boolean)});
   }
   function renderEkos(k) {
     var box = el("div", undefined, "well well-sm");
@@ -105,13 +132,20 @@
   async function go(kind) {
     var q = document.getElementById("q").value;
     busy.textContent = "Working…";
+    out.replaceChildren(); live.replaceChildren(); steps = [];
+    ticker = setInterval(function () { if (steps.some(function (x) { return x && x.running; })) showLive(); }, 500);
     try {
       var tok = (await (await fetch("/api/v1/security/csrf_token/", {credentials: "same-origin"})).json()).result;
       var res = await fetch("/api/v1/ekos_ai/" + kind, {method: "POST", credentials: "same-origin",
-        headers: {"Content-Type": "application/json", "X-CSRFToken": tok}, body: JSON.stringify({question: q, source: document.getElementById("src").value || undefined})});
-      var body = await res.json();
-      render(res.ok ? body.result : {status: "failed", explanation: body.message || "Request failed."});
-    } catch (e) { render({status: "failed", explanation: "Request failed."}); }
+        headers: {"Content-Type": "application/json", "X-CSRFToken": tok}, body: JSON.stringify({question: q, stream: true, source: document.getElementById("src").value || undefined})});
+      if (res.ok && (res.headers.get("Content-Type") || "").indexOf("ndjson") >= 0) {
+        await readStream(res);
+      } else {
+        var body = await res.json();
+        render(res.ok ? body.result : {status: "failed", explanation: body.message || "Request failed."});
+      }
+    } catch (e) { render({status: "failed", explanation: "Request failed.", ekos_log: steps.filter(Boolean)}); }
+    clearInterval(ticker); live.replaceChildren();
     busy.textContent = "";
   }
   // The sources a question may run on (PostgreSQL, the Iceberg lakehouse): a picker when there are several.

@@ -120,6 +120,9 @@ def _requalify_to() -> str | None:
 def _client() -> ekos_mcp.EkosClient:
     client = ekos_mcp.from_config(cfg)
     g.ekos_client = client  # the API reads its log, also when the question fails
+    listener = g.get("ekos_listener")
+    if listener is not None and isinstance(client.log, ekos_mcp.StepLog):
+        client.log.listener = listener  # the page shows each step as it happens
     return client
 
 
@@ -167,6 +170,8 @@ class Context:
 
 
 def _ask(system: str, user: str, dialect: str, client=None, step: str = "model drafts") -> dict:
+    ekos_mcp.step_started(getattr(client, "log", None),
+                          {"step": step, "tool": f"model {cfg('EKOS_AI_MODEL')} (Superset, not EKOS)"})
     started = time.monotonic()
     try:
         answer = llm.complete(
@@ -315,6 +320,7 @@ def text_to_sql(question: str) -> dict:
     database = _database()
     started = time.monotonic()
     step = f"run the checked SQL on {cfg('EKOS_AI_DATABASE')} (read-only, not EKOS)"
+    ekos_mcp.step_started(ctx.client.log, {"step": step})
     try:
         frame = _run(database, cfg("EKOS_AI_SCHEMA", "public"), checked.sql, max_rows)
     except Exception as err:  # the database's own message is the useful one

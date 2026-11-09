@@ -148,3 +148,29 @@ def test_a_note_after_the_json_is_kept_apart():
     client = EkosClient("http://ekos/mcp", post=post)
     assert client.call("ekos_ossie_export") == {"datasets": 1}
     assert client.log[-1]["notes"] == ["Note: the ledger may be behind the sources (3 files changed)."]
+
+
+def test_each_step_is_heard_when_it_starts_and_when_it_ends():
+    post = FakePost(lambda m: Resp(tool_result({"matches": [{"name": "c_order"}]})))
+    client = EkosClient("http://ekos/mcp", post=post)
+    heard = []
+    client.log.listener = heard.append
+    client.call("ekos_search", {"query": "order"}, step="find tables")
+    assert [(e["type"], e["i"]) for e in heard] == [
+        ("start", 0), ("step", 0),            # connect
+        ("start", 1), ("step", 1), ("step", 1),  # the call, then its summary
+    ]
+    assert heard[2]["entry"]["step"] == "find tables" and "ok" not in heard[2]["entry"]
+    assert heard[-1]["entry"]["ok"] is True and "summary" in heard[-1]["entry"]
+
+
+def test_a_failing_listener_never_stops_the_answer():
+    post = FakePost(lambda m: Resp(tool_result({"ok": 1})))
+    client = EkosClient("http://ekos/mcp", post=post)
+
+    def broken(event):
+        raise RuntimeError("the page went away")
+
+    client.log.listener = broken
+    assert client.call("ekos_status") == {"ok": 1}
+    assert client.log.listener is None and len(client.log) == 2
