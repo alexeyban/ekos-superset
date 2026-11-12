@@ -25,13 +25,18 @@ def complete(system: str, user: str, *, model: str, base_url: str, key_env: str,
     attempts, limit = 0, max_tokens
     while True:
         attempts += 1
-        response = requests.post(
-            base_url.rstrip("/") + "/v1/messages",
-            headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-            json={"model": model, "max_tokens": limit, "system": system,
-                  "messages": [{"role": "user", "content": user}]},
-            timeout=timeout,
-        )
+        try:
+            response = requests.post(
+                base_url.rstrip("/") + "/v1/messages",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                json={"model": model, "max_tokens": limit, "system": system,
+                      "messages": [{"role": "user", "content": user}]},
+                timeout=timeout,
+            )
+        except requests.Timeout as err:
+            raise ModelError(f"The model service did not answer within {timeout:.0f} s.") from err
+        except requests.RequestException as err:
+            raise ModelError("The model service could not be reached.") from err
         if response.status_code >= 300:
             raise ModelError(f"The model service answered {response.status_code}.")
         body = response.json()

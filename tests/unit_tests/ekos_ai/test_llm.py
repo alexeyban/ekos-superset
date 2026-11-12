@@ -49,3 +49,19 @@ def test_a_second_cut_off_is_an_error_not_a_loop(monkeypatch):
     with pytest.raises(llm.ModelError) as err:
         call()
     assert sent == [100, 200] and "asked twice" in str(err.value)
+
+
+def test_a_model_that_does_not_answer_in_time_is_a_model_error(monkeypatch):
+    import requests
+    from superset.ekos_ai import llm
+
+    def slow(*a, **kw):
+        raise requests.Timeout("read timed out")
+    monkeypatch.setenv("K", "x")
+    monkeypatch.setattr(llm.requests, "post", slow)
+    try:
+        llm.complete("s", "u", model="m", base_url="http://m", key_env="K", timeout=7)
+    except llm.ModelError as err:
+        assert "within 7 s" in str(err)
+    else:
+        raise AssertionError("no error")
