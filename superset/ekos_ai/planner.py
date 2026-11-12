@@ -52,6 +52,69 @@ def _aggregates(sql: str) -> bool:
     return isinstance(root, exp.Select) and root.args.get("group") is not None
 
 
+_TEMPORAL = {
+    exp.DataType.Type.DATE,
+    exp.DataType.Type.DATETIME,
+    exp.DataType.Type.TIMESTAMP,
+    exp.DataType.Type.TIMESTAMPTZ,
+    exp.DataType.Type.TIMESTAMPLTZ,
+}
+
+
+def _select(sql: str):
+    try:
+        root = sqlglot.parse_one(sql or "", read="postgres")
+    except sqlglot.errors.ParseError:
+        return None
+    return root if isinstance(root, exp.Select) else None
+
+
+def temporal_columns(sql: str, columns: list[str], dtypes: dict[str, str]) -> set[str]:
+    """The output columns that hold dates: a datetime type in the result, or a projection that
+    casts to a date/timestamp or truncates one. A dataset Superset could not read columns for (a
+    query with no rows yet) needs this to draw a time axis."""
+    out = {c for c in columns if "datetime" in str(dtypes.get(c, "")).lower()}
+    root = _select(sql)
+    if root is None:
+        return out
+    by_lower = {c.lower(): c for c in columns}
+    for projection in root.expressions:
+        node = projection.this if isinstance(projection, exp.Alias) else projection
+        temporal = (isinstance(node, exp.Cast) and node.to.this in _TEMPORAL) or isinstance(
+            node, (exp.DateTrunc, exp.TimestampTrunc, exp.Date)
+        )
+        name = by_lower.get(projection.alias_or_name.lower())
+        if temporal and name:
+            out.add(name)
+    return out
+
+
+_NOW = (exp.CurrentDate, exp.CurrentTimestamp, exp.CurrentDatetime)
+
+
+def latest_value_probe(sql: str) -> tuple[str, str] | None:
+    """For a query that compares a column with the current date (`>= DATE_TRUNC('YEAR',
+    CURRENT_DATE)`), the query that tells how far the data goes: `SELECT MAX(col) FROM table`
+    over its one table, and the column's name. `None` when there is no such comparison or more
+    than one table. Built from the parsed identifiers, never from text."""
+    root = _select(sql)
+    if root is None:
+        return None
+    tables = list(root.find_all(exp.Table))
+    where = root.args.get("where")
+    if len(tables) != 1 or where is None:
+        return None
+    for cmp in where.find_all(exp.GT, exp.GTE, exp.EQ):
+        column, other = cmp.this, cmp.expression
+        if isinstance(column, exp.Column) and any(other.find_all(*_NOW)):
+            table = tables[0]
+            probe = exp.select(exp.Max(this=exp.column(column.name))).from_(
+                exp.table_(table.name, db=table.db or None)
+            )
+            return probe.sql(dialect="postgres"), f"{table.name}.{column.name}"
+    return None
+
+
 def form_data(spec: dict, columns: list[str], dataset_id: int) -> tuple[str, dict]:
     """The viz type and params of one chart; raises BadSpec for anything not in the vocabulary."""
     viz = VIZ.get(str(spec.get("viz", "")).lower())

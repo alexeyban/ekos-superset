@@ -64,3 +64,24 @@ def test_an_aggregated_query_with_several_values_needs_a_metric():
             "sql": "SELECT m, COUNT(*) AS n, SUM(x) AS total FROM t GROUP BY m"}
     with pytest.raises(BadSpec):
         form_data(spec, ["m", "n", "total"], 3)
+
+
+def test_date_projections_are_temporal_even_without_rows():
+    from superset.ekos_ai.planner import temporal_columns
+
+    sql = ("SELECT CAST(DATE_TRUNC('MONTH', datetrx) AS DATE) AS month, AVG(payamt) AS avg_cheque "
+           "FROM adempiere.c_payment GROUP BY 1")
+    assert temporal_columns(sql, ["month", "avg_cheque"], {"month": "object", "avg_cheque": "object"}) == {"month"}
+    assert temporal_columns("SELECT d FROM t", ["d"], {"d": "datetime64[ns]"}) == {"d"}
+    assert temporal_columns("not sql at all (", ["x"], {}) == set()
+
+
+def test_a_query_about_the_current_period_gets_a_latest_value_probe():
+    from superset.ekos_ai.planner import latest_value_probe
+
+    sql = ("SELECT AVG(payamt) AS avg_cheque FROM adempiere.c_payment WHERE tendertype = 'K' "
+           "AND datetrx >= DATE_TRUNC('YEAR', CURRENT_DATE) AND datetrx < DATE_TRUNC('YEAR', CURRENT_DATE) + INTERVAL '1 YEAR'")
+    probe, column = latest_value_probe(sql)
+    assert probe == "SELECT MAX(datetrx) FROM adempiere.c_payment" and column == "c_payment.datetrx"
+    assert latest_value_probe("SELECT * FROM c_payment WHERE payamt > 10") is None
+    assert latest_value_probe("SELECT * FROM a JOIN b ON a.id = b.id WHERE a.d >= CURRENT_DATE") is None

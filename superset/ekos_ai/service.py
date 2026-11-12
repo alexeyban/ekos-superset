@@ -473,8 +473,11 @@ def _finish(ctx: Context, drafted: dict, left: dict, max_rows: int) -> dict:
         return {"status": "failed", "sql": checked.sql, "explanation": str(err)[:300], "ekos": ekos}
     ctx.client.log.append({"step": step, "ok": True, "summary": f"{len(frame)} rows",
                            "ms": round((time.monotonic() - started) * 1000)})
+    explanation = drafted["explanation"]
+    if len(frame) == 0:
+        explanation = f"{explanation} {_empty_note(database, cfg('EKOS_AI_SCHEMA', 'public'), checked.sql)}".strip()
     return {"status": "ok", "sql": checked.sql, "tables": list(checked.tables),
-            "explanation": drafted["explanation"], "ekos": ekos, **_plain(frame)}
+            "explanation": explanation, "ekos": ekos, **_plain(frame)}
 
 
 def text_to_dashboard(question: str) -> dict:
@@ -508,6 +511,8 @@ def text_to_dashboard(question: str) -> dict:
             frame = _run(database, sch, checked.sql, 5)
             columns = [str(c) for c in frame.columns]
             planner.form_data(spec, columns, 0)  # vocabulary and columns, before anything is created
+            if len(frame) == 0:
+                warned.append(f"Chart {number}: {_empty_note(database, sch, checked.sql)}")
         except (guard.Refused, planner.BadSpec) as err:
             return {"status": "refused", "explanation": f"Chart {number}: {err}"}
         except ekos_mcp.EkosUnavailable:
@@ -516,7 +521,7 @@ def text_to_dashboard(question: str) -> dict:
             return {"status": "failed", "explanation": f"Chart {number}: {str(err)[:240]}"}
         used.update(checked.tables)
         warned.extend(knowledge.warnings(report))
-        prepared.append((spec, checked, columns))
+        prepared.append((spec, checked, columns, _temporal(checked.sql, frame)))
     result = _build(database, sch, proposal, prepared)
     result.pop("built", None)
     ekos = knowledge.grounding(ctx.catalog, tuple(sorted(used)), None)
@@ -524,6 +529,51 @@ def text_to_dashboard(question: str) -> dict:
     ekos["author"] = "model, checked by EKOS"
     ekos["remaining"] = left
     return {**result, "ekos": ekos}
+
+
+def _temporal(sql: str, frame) -> set[str]:
+    return planner.temporal_columns(
+        sql, [str(c) for c in frame.columns], {str(k): str(v) for k, v in frame.dtypes.items()}
+    )
+
+
+def _complete_columns(dataset, columns: list[str], temporal: set[str]) -> int:
+    """Superset reads a virtual dataset's columns by running its query, and a query with no rows
+    yet (this year's payments in sample data from earlier years) leaves the dataset with none:
+    every chart on it then fails with "Columns missing in dataset". The columns EKOS's own run of
+    the same checked query returned fill the gap; date columns are marked temporal. Returns how
+    many were added."""
+    from superset.connectors.sqla.models import TableColumn
+    from superset.extensions import db
+
+    have = {str(c.column_name).lower() for c in dataset.columns}
+    added = 0
+    for name in columns:
+        if name.lower() in have:
+            continue
+        dataset.columns.append(TableColumn(column_name=name, is_dttm=name in temporal))
+        added += 1
+    if added:
+        if not getattr(dataset, "main_dttm_col", None) and temporal:
+            dataset.main_dttm_col = sorted(temporal)[0]
+        db.session.commit()
+    return added
+
+
+def _empty_note(database, sch: str, sql: str) -> str:
+    """Why an answer has no rows, in words: how far the data goes when the query asks about the
+    current period, else a plain statement."""
+    probe = planner.latest_value_probe(sql)
+    if probe is not None:
+        try:
+            latest = _run(database, sch, probe[0], 1)
+            value = latest.iat[0, 0] if len(latest) else None
+        except Exception:  # the note is a courtesy; the answer stands without it
+            value = None
+        if value is not None and value == value:
+            return (f"No rows match: the question asks about the current period, and the latest "
+                    f"{probe[1]} in the data is {str(value)[:10]}. Ask about a period the data covers.")
+    return "No rows match this question in the data."
 
 
 def _build(database, sch: str, proposal: dict, prepared: list) -> dict:
@@ -538,12 +588,13 @@ def _build(database, sch: str, proposal: dict, prepared: list) -> dict:
     placed: list[tuple[int, str]] = []
     built: list[dict] = []
     tag = uuid.uuid4().hex[:6]
-    for number, (spec, checked, columns) in enumerate(prepared, 1):
+    for number, (spec, checked, columns, *meta) in enumerate(prepared, 1):
         name = planner.clean_name(spec.get("name"), f"Chart {number}")
         dataset = CreateDatasetCommand({
             "database": database.id, "schema": sch, "table_name": f"ai_{tag}_{number}",
             "sql": checked.sql, "owners": owner,
         }).run()
+        _complete_columns(dataset, columns, meta[0] if meta else set())
         viz, params = planner.form_data(spec, columns, dataset.id)
         chart = CreateChartCommand({
             "slice_name": name, "datasource_id": dataset.id, "datasource_type": "table",
@@ -709,7 +760,8 @@ def terms_dashboard(question: str) -> dict:
             raise
         except Exception as err:
             return {"status": "failed", "explanation": f"Chart {number}: {str(err)[:240]}"}
-        prepared.append((draw, guard.Checked(sql=c["sql"], tables=(c["mart"],)), columns))
+        prepared.append((draw, guard.Checked(sql=c["sql"], tables=(c["mart"],)), columns,
+                         _temporal(c["sql"], frame)))
         checks.append(rec)
     result = _build(database, sch, {"title": proposal.get("title"), "explanation": proposal.get("explanation")}, prepared)
     entries = [bundle.chart_entry(n, c, c["presentation"], placed, rec)

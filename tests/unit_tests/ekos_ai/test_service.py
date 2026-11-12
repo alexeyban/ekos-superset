@@ -293,3 +293,30 @@ def test_an_unlimited_user_spends_no_question(app, monkeypatch):
     g.user = SimpleNamespace(id=1, username="google:owner@example.com")
     assert service._spend_question() == {"yours": "no limit", "everyone": "not counted"}
     assert spent == []
+
+
+def test_a_dataset_superset_read_no_columns_for_gets_the_checked_querys(app, monkeypatch):
+    """A query with no rows yet (this year over older data): Superset leaves the virtual dataset
+    without columns and every chart on it fails with "Columns missing in dataset"."""
+
+    class Col:
+        def __init__(self, column_name, is_dttm=False):
+            self.column_name, self.is_dttm = column_name, is_dttm
+
+    class Dataset:
+        def __init__(self, cols):
+            self.columns, self.main_dttm_col = list(cols), None
+
+    committed = []
+    import superset.connectors.sqla.models as models
+    import superset.extensions as extensions
+
+    monkeypatch.setattr(models, "TableColumn", Col)
+    monkeypatch.setattr(extensions.db.session, "commit", lambda: committed.append(True))
+    empty = Dataset([])
+    assert service._complete_columns(empty, ["month", "avg_cheque"], {"month"}) == 2
+    assert [(c.column_name, c.is_dttm) for c in empty.columns] == [("month", True), ("avg_cheque", False)]
+    assert empty.main_dttm_col == "month" and committed == [True]
+    full = Dataset([Col("month"), Col("avg_cheque")])
+    assert service._complete_columns(full, ["month", "avg_cheque"], {"month"}) == 0
+    assert committed == [True], "nothing to add, nothing written"
