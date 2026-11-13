@@ -308,11 +308,19 @@ def test_a_dataset_superset_read_no_columns_for_gets_the_checked_querys(app, mon
             self.columns, self.main_dttm_col = list(cols), None
 
     committed = []
-    import superset.connectors.sqla.models as models
-    import superset.extensions as extensions
+    # Stand-ins for Superset's model and extension modules: importing the real ones needs a
+    # running Superset app (Flask-Babel), which this unit test does not start.
+    import sys
+    import types
 
-    monkeypatch.setattr(models, "TableColumn", Col)
-    monkeypatch.setattr(extensions.db.session, "commit", lambda: committed.append(True))
+    models = types.ModuleType("superset.connectors.sqla.models")
+    models.TableColumn = Col
+    extensions = types.ModuleType("superset.extensions")
+    extensions.db = types.SimpleNamespace(
+        session=types.SimpleNamespace(commit=lambda: committed.append(True))
+    )
+    monkeypatch.setitem(sys.modules, "superset.connectors.sqla.models", models)
+    monkeypatch.setitem(sys.modules, "superset.extensions", extensions)
     empty = Dataset([])
     assert service._complete_columns(empty, ["month", "avg_cheque"], {"month"}) == 2
     assert [(c.column_name, c.is_dttm) for c in empty.columns] == [("month", True), ("avg_cheque", False)]
