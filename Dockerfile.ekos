@@ -4,7 +4,8 @@
 ARG SUPERSET_VERSION=4.1.1
 FROM apache/superset:${SUPERSET_VERSION}
 USER root
-RUN pip install --no-cache-dir psycopg2-binary 'trino[sqlalchemy]==0.333.0'
+COPY requirements/ekos-image.txt /tmp/ekos-image.txt
+RUN pip install --no-cache-dir -r /tmp/ekos-image.txt
 COPY superset/ekos_ai /app/superset/ekos_ai
 COPY superset/initialization/__init__.py /app/superset/initialization/__init__.py
 USER superset

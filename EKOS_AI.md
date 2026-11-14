@@ -32,7 +32,8 @@ For each question:
    foreign-key joins between them, the check's warnings and its note. The page shows it under
    "From EKOS".
 
-The query then runs with a 15 s statement timeout. Dashboards are built with Superset's own
+The query then runs with a deadline (`EKOS_AI_QUERY_TIMEOUT`, 15 s): PostgreSQL's `statement_timeout`, or
+for DuckDB, which has none, `interrupt()` from a timer (`deadline.py`). Dashboards are built with Superset's own
 commands, owned by the caller, after `planner.form_data` checks each spec against its result's
 columns. The person's text is delimited data (`<question>`, angle brackets removed, 600 characters).
 
@@ -46,13 +47,14 @@ columns. The person's text is delimited data (`<question>`, angle brackets remov
 | `EKOS_MCP_DATABASE` | only tables of this `[[databases]]` name (optional) |
 | `EKOS_MCP_STATUS` | which business meanings to show the model: `confirmed` (default), `hypothesis` or `all` |
 | `EKOS_MCP_TIMEOUT` | seconds per EKOS call (default 30) |
-| `EKOS_AI_DIALECT` | the engine for EKOS's checks and the guard: `postgres` (default), `trino`, `oracle`, … |
+| `EKOS_AI_DIALECT` | the engine for EKOS's checks and the guard: `postgres` (default), `trino`, `oracle`, `duckdb` (EKOS 1.6.0+), … An EKOS that does not know the dialect is an error, never a passed check |
 | `EKOS_AI_DATABASE` | name of the Superset database connection to query (use a **read-only role**) |
 | `EKOS_AI_SCHEMA` | schema the queries run in |
 | `EKOS_AI_TABLES` | comma list of tables the model may use, out of those EKOS knows (recommended) |
 | `EKOS_AI_MODEL`, `EKOS_AI_BASE_URL` | Anthropic Messages API |
 | `EKOS_AI_KEY_ENV` | name of the environment variable holding the model key (default `ANTHROPIC_API_KEY`) |
 | `EKOS_AI_MAX_ROWS` | row limit (default 200) |
+| `EKOS_AI_QUERY_TIMEOUT` | seconds a query may run (default 15) |
 | `EKOS_AI_PER_USER_PER_DAY` | questions (SQL or dashboard) per Superset user per UTC day (default 5) |
 | `EKOS_AI_PER_DAY` | questions per day for the whole instance (default 50) |
 
@@ -61,6 +63,35 @@ Permissions: the `EkosAI` resource (`can read` for SQL, `can write` for dashboar
 The EKOS tools used are all read-only and in the console's scoped set: `ekos_ossie_export`,
 `ekos_search`, `ekos_sql_check`, and `ekos_sql_generate` when the project turns it on
 (it calls a model; EKOS and the console cap it too).
+
+## DuckDB gold marts (EKOS RFC 0259)
+
+The image ships `duckdb` and `duckdb-engine` at the versions in `requirements/ekos-image.txt`
+(DuckDB 1.5.5, the release the lakehouse writes the marts with; a reader older than the writer
+cannot open the file, so bump both together). Add the connection in Superset with
+
+- SQLAlchemy URI: `duckdb:////marts/marts.duckdb`
+- Advanced → Other → Engine parameters:
+
+  ```json
+  {"connect_args": {"read_only": true,
+                    "config": {"enable_external_access": false, "lock_configuration": true}}}
+  ```
+
+and set `EKOS_AI_DIALECT = "duckdb"` (or `"dialect": "duckdb"` on the source in `EKOS_AI_SOURCES`).
+No Superset setting is needed for these parameters. Both settings go in `config`, which DuckDB
+applies when it opens the file: with `lock_configuration` no later `SET` can undo them, and with
+`enable_external_access = false` DuckDB refuses `read_csv('/etc/passwd')`, `ATTACH`, `COPY … TO`
+and `INSTALL` with a permission error (checked in the image). Do not add other `config` keys:
+duckdb-engine sets keys DuckDB does not know at open time with `SET` after opening, which the lock
+refuses.
+
+The guard is the second barrier. For every dialect it refuses DuckDB's file and network table
+functions (`read_csv*`, `read_parquet`, `read_json*`, `read_text`, `read_blob`, `glob`,
+`iceberg_scan`, `delta_scan`, `parquet_*`, `sniff_csv`, `query`, `query_table`), `getenv`, the
+statements `ATTACH`, `DETACH`, `COPY`, `EXPORT`, `IMPORT`, `INSTALL`, `LOAD`, `PRAGMA`, `SET`,
+`RESET`, `CALL` (by their first word, before parsing), a string used as a table (`FROM '/etc/passwd'`),
+and the `system` / `temp` catalogs.
 
 ## Not done yet
 

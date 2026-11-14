@@ -15,8 +15,9 @@ jobs:
       - name: Unit tests in the official image
         run: |
           docker run --rm -u 0 -v "$PWD/superset/ekos_ai:/app/superset/ekos_ai:ro" \
-            -v "$PWD/tests/unit_tests/ekos_ai:/t:ro" apache/superset:4.1.1 \
-            sh -c 'pip install -q pytest && cd /app && python -m pytest -q -p no:cacheprovider --noconftest /t'
+            -v "$PWD/tests/unit_tests/ekos_ai:/t:ro" -v "$PWD/requirements/ekos-image.txt:/r.txt:ro" \
+            apache/superset:4.1.1 \
+            sh -c 'pip install -q pytest -r /r.txt && cd /app && python -m pytest -q -p no:cacheprovider --noconftest /t'
   image:
     needs: test
     runs-on: ubuntu-latest
