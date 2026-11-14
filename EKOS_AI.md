@@ -67,7 +67,7 @@ The EKOS tools used are all read-only and in the console's scoped set: `ekos_oss
 ## DuckDB gold marts (EKOS RFC 0259)
 
 The image ships `duckdb` and `duckdb-engine` at the versions in `requirements/ekos-image.txt`
-(DuckDB 1.5.5, the release the lakehouse writes the marts with; a reader older than the writer
+(DuckDB 1.5.6, the release the lakehouse writes the marts with; a reader older than the writer
 cannot open the file, so bump both together). Add the connection in Superset with
 
 - SQLAlchemy URI: `duckdb:////marts/marts.duckdb`
