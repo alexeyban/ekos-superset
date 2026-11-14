@@ -349,3 +349,14 @@ def test_a_dataset_superset_read_no_columns_for_gets_the_checked_querys(app, mon
     full = Dataset([Col("month"), Col("avg_cheque")])
     assert service._complete_columns(full, ["month", "avg_cheque"], {"month"}) == 0
     assert committed == [True], "nothing to add, nothing written"
+
+
+def test_the_model_is_told_the_date_and_to_compute_relative_periods(app, wired, monkeypatch):
+    """"This year" is today's year: the prompt carries the date, and the rules say a relative
+    period is CURRENT_DATE arithmetic, never a year the model writes (llama3 wrote 2023)."""
+    monkeypatch.setattr(service.quota, "today", lambda: "2026-11-14")
+    ekos = FakeEkos()
+    prompts, _ = wired(ekos, [{"status": "ok", "sql": OK_SQL, "explanation": "Revenue per customer."}])
+    service.text_to_sql("revenue per customer this year")
+    assert "<today>2026-11-14</today>" in prompts[0]
+    assert "CURRENT_DATE" in service.SQL_SYSTEM and "CURRENT_DATE" in service.DASH_SYSTEM
