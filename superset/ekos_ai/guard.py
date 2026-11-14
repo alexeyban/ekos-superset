@@ -7,14 +7,32 @@ from dataclasses import dataclass
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.tokens import TokenType
 
 # Functions that read files, sleep, reach other servers or change session state.
 _FORBIDDEN_FUNCTIONS = {
     "pg_sleep", "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_stat_file",
     "lo_import", "lo_export", "dblink", "dblink_exec", "set_config", "current_setting",
     "pg_terminate_backend", "pg_cancel_backend", "copy", "load_file", "sleep", "benchmark",
+    # DuckDB (EKOS RFC 0259 S3): table functions that read files or the network, the environment,
+    # and those that run SQL given as a string. DuckDB refuses most of these itself when the
+    # connection has `enable_external_access = false` (S1); the guard is the second barrier.
+    "read_csv", "read_csv_auto", "read_parquet", "read_json", "read_json_auto",
+    "read_json_objects", "read_json_objects_auto", "read_ndjson", "read_ndjson_auto",
+    "read_ndjson_objects", "read_text", "read_blob", "read_xlsx", "glob", "iceberg_scan",
+    "iceberg_metadata", "iceberg_snapshots", "delta_scan", "parquet_scan", "parquet_metadata",
+    "parquet_schema", "parquet_file_metadata", "parquet_kv_metadata", "sniff_csv", "getenv",
+    "query", "query_table", "duckdb_secrets", "which_secret", "duckdb_settings",
 }
-_SYSTEM_SCHEMAS = {"pg_catalog", "information_schema", "pg_toast", "mysql", "sys"}
+# Name prefixes refused as functions: PostgreSQL's server functions; DuckDB's file readers.
+_FORBIDDEN_PREFIXES = ("pg_", "read_", "parquet_", "iceberg_", "delta_")
+# Statements refused by their first word, before parsing (sqlglot reads several of DuckDB's as
+# something else: `DETACH x` and `INSTALL x` as an alias, `EXPORT DATABASE` not at all).
+_FORBIDDEN_STATEMENTS = {
+    "ATTACH", "DETACH", "COPY", "EXPORT", "IMPORT", "INSTALL", "LOAD", "PRAGMA", "SET", "RESET",
+    "CALL", "USE", "CHECKPOINT", "FORCE", "VACUUM",
+}
+_SYSTEM_SCHEMAS = {"pg_catalog", "information_schema", "pg_toast", "mysql", "sys", "system", "temp"}
 _WRITE_NODES = (
     exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create, exp.Alter, exp.Command,
     exp.Merge, exp.Set, exp.Use, exp.Grant, exp.TruncateTable, exp.Into,
@@ -42,6 +60,7 @@ def check_sql(
     text = (sql or "").strip().rstrip(";").strip()
     if not text:
         raise Refused("The model returned no SQL.")
+    _refuse_statement(text, dialect)
     try:
         statements = [s for s in sqlglot.parse(text, read=dialect) if s is not None]
     except sqlglot.errors.ParseError as err:
@@ -62,18 +81,22 @@ def check_sql(
             name = (node.sql_name() or "").lower()
             if name in _FORBIDDEN_FUNCTIONS:
                 raise Refused(f"The function {name} is not allowed.")
-        if isinstance(node, exp.Anonymous) and str(node.this).lower().startswith("pg_"):
+        if isinstance(node, exp.Anonymous) and str(node.this).lower().startswith(_FORBIDDEN_PREFIXES):
             raise Refused(f"The function {node.this} is not allowed.")
+    literal_tables = _string_literal_tables(text, dialect)
     requalify_to = schema  # the loop below names each table's own schema `schema`
     ctes = {c.alias_or_name.lower() for c in root.find_all(exp.CTE)}
     used: list[str] = []
     for table in root.find_all(exp.Table):
         name = (table.name or "").lower()
         schema = (table.db or "").lower()
+        if isinstance(table.this, exp.Identifier) and table.this.quoted and table.name in literal_tables:
+            raise Refused(f"A string cannot be read as a table ('{table.name[:80]}'): name a table.")
         if name in ctes and not schema:
             continue
-        if schema in _SYSTEM_SCHEMAS:
-            raise Refused(f"The schema {schema} is not available.")
+        for part in (schema, (table.catalog or "").lower()):
+            if part in _SYSTEM_SCHEMAS:
+                raise Refused(f"The schema {part} is not available.")
         if name not in tables:
             raise Refused(f"The table {name or '?'} is not one you may query.")
         used.append(name)
@@ -88,6 +111,28 @@ def check_sql(
     if root.args.get("limit") is None and isinstance(root, exp.Select):
         root = root.limit(max_rows)
     return Checked(sql=root.sql(dialect=dialect), tables=tuple(sorted(set(used))))
+
+
+def _tokens(text: str, dialect: str):
+    try:
+        return sqlglot.tokenize(text, read=dialect)
+    except sqlglot.errors.TokenError as err:
+        raise Refused(f"The SQL does not parse: {str(err)[:160]}") from err
+
+
+def _refuse_statement(text: str, dialect: str) -> None:
+    """Refuse a statement by its first word (comments skipped by the tokenizer)."""
+    tokens = _tokens(text, dialect)
+    first = tokens[0].text.upper() if tokens else ""
+    if first in _FORBIDDEN_STATEMENTS:
+        raise Refused(f"{first} is not allowed: this is a read-only query.")
+
+
+def _string_literal_tables(text: str, dialect: str) -> set[str]:
+    """The texts of the query's string literals. sqlglot reads DuckDB's `FROM '/etc/passwd'` (a
+    file read by a replacement scan) as a quoted identifier, the same as `FROM "x"`; a quoted
+    table name that is also one of these texts was written as a string."""
+    return {t.text for t in _tokens(text, dialect) if t.token_type == TokenType.STRING}
 
 
 def tables_in(sql: str, *, dialect: str = "postgres") -> set[str]:
