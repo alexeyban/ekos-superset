@@ -84,6 +84,27 @@ def test_persistent_ekos_errors_refuse_and_nothing_runs(app, wired):
     assert r["status"] == "refused" and "L002" in r["explanation"] and ran == []
 
 
+def test_a_fan_out_join_is_repaired_or_refused_never_answered(app, wired):
+    fan_out = {"findings": [{"code": "L002", "severity": "warn",
+                             "message": "join a.month = b.month is no foreign key and neither side is a key"}]}
+    ekos = FakeEkos(check_reports=[fan_out, fan_out])
+    prompts, ran = wired(ekos, [{"status": "ok", "sql": "select 1 from store_sales"}] * 2)
+    r = service.text_to_sql("revenue by customer and category")
+    assert r["status"] == "refused" and "L002" in r["explanation"] and ran == []
+    assert "impossible" in prompts[1]
+
+
+def test_a_fan_out_join_the_model_cannot_avoid_becomes_impossible(app, wired):
+    fan_out = {"findings": [{"code": "L002", "severity": "warn", "message": "join off the keys"}]}
+    ekos = FakeEkos(check_reports=[fan_out])
+    _, ran = wired(ekos, [
+        {"status": "ok", "sql": "select 1 from store_sales"},
+        {"status": "impossible", "explanation": "No table has revenue by customer."},
+    ])
+    r = service.text_to_sql("revenue by customer and category")
+    assert r["status"] == "impossible" and "by customer" in r["explanation"] and ran == []
+
+
 def test_a_table_ekos_does_not_know_is_refused_then_repaired(app, wired):
     ekos = FakeEkos()
     prompts, ran = wired(ekos, [

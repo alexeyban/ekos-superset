@@ -75,6 +75,16 @@ def test_errors_and_warnings_split_by_severity():
     assert knowledge.errors({"parse_error": "bad"}) == ["parse error: bad"]
 
 
+def test_a_join_that_multiplies_rows_blocks_like_an_error():
+    # L002 (a join on no foreign key with no key on either side) sums every measure several
+    # times: the rows would be wrong, not doubtful, so it is never shown as a mere warning.
+    report = {"findings": [
+        {"code": "L002", "severity": "warn", "message": "join a.m = b.m is no foreign key"},
+        {"code": "L005", "severity": "warn", "message": "integer division"}]}
+    assert knowledge.errors(report) == ["L002: join a.m = b.m is no foreign key"]
+    assert knowledge.warnings(report) == [{"code": "L005", "message": "integer division"}]
+
+
 def test_grounding_names_only_used_tables_and_their_joins():
     cat = knowledge.catalog_from_ossie(OSSIE)
     g = knowledge.grounding(cat, ("customer", "store_sales"), {"note": "static"})

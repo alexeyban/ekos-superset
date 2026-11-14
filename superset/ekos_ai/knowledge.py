@@ -232,13 +232,24 @@ def describe(names: list[str], catalog: Catalog) -> str:
     return "\n".join(lines)
 
 
+# Warnings that make the rows wrong rather than doubtful: a join on no foreign key with no key on
+# either side (L002) matches each row many times and sums every measure several times over. They
+# go back to the model for repair like errors, and refuse the answer when they stay.
+BLOCKING_WARNINGS = frozenset({"L002"})
+
+
+def _blocks(item: dict) -> bool:
+    return (str(item.get("severity", "")).lower() == "error"
+            or str(item.get("code", "")) in BLOCKING_WARNINGS)
+
+
 def errors(report: dict) -> list[str]:
     """The blocking problems in an ``ekos_sql_check`` report."""
     found = []
     if report.get("parse_error"):
         found.append(f"parse error: {_text(report['parse_error'], 200)}")
     for item in report.get("findings") or []:
-        if str(item.get("severity", "")).lower() == "error":
+        if _blocks(item):
             found.append(f"{item.get('code', '')}: {_text(item.get('message'), 240)}")
     return found
 
@@ -247,7 +258,7 @@ def warnings(report: dict) -> list[dict]:
     return [
         {"code": str(i.get("code", "")), "message": _text(i.get("message"), 240)}
         for i in report.get("findings") or []
-        if str(i.get("severity", "")).lower() != "error"
+        if not _blocks(i)
     ]
 
 

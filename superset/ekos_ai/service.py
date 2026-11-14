@@ -63,7 +63,8 @@ Answer with JSON only: {{"status": "ok" | "needs_clarification" | "impossible", 
 REPAIR = """EKOS checked your SQL against the compiled schema and found errors:
 {errors}
 Answer again with the same JSON shape, the SQL corrected. Use only the tables, columns and joins
-under <schema>."""
+under <schema>. If no SQL over these tables answers the question without such a join (no table has
+the columns together), answer with status "impossible" and name the column that is missing."""
 
 # EKOS dialect names → sqlglot's.
 _SQLGLOT = {"mssql": "tsql", "generic": "postgres"}
