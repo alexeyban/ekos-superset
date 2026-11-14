@@ -15,7 +15,16 @@ from typing import Any
 
 from flask import current_app, g
 
-from superset.ekos_ai import bundle, ekos_mcp, guard, knowledge, llm, planner, quota
+from superset.ekos_ai import (
+    bundle,
+    deadline,
+    ekos_mcp,
+    guard,
+    knowledge,
+    llm,
+    planner,
+    quota,
+)
 
 SQL_SYSTEM = """You write one {dialect} SELECT that answers a business question, from the schema
 EKOS compiled. Rules: use only the tables and columns listed under <schema>; join only on the
@@ -124,7 +133,13 @@ def _allowed() -> set[str] | None:
 
 
 def _dialect() -> str:
+    """EKOS's name for the engine (`postgres`, `trino`, `duckdb`, …): sent to EKOS as is."""
     return str(cfg("EKOS_AI_DIALECT", "postgres") or "postgres").lower()
+
+
+def _sqlglot_dialect() -> str:
+    """The same engine, as sqlglot names it (the guard and the planner parse with it)."""
+    return _SQLGLOT.get(_dialect(), _dialect())
 
 
 def _requalify_to() -> str | None:
@@ -244,13 +259,12 @@ def _no_tables(ctx: Context) -> dict:
 
 
 def _run(database, sch: str, sql: str, rows: int):
+    import pandas as pd
     from sqlalchemy import text
 
-    with database.get_sqla_engine(schema=sch) as engine, engine.connect() as conn:
-        if engine.dialect.name == "postgresql":
-            conn.execute(text("SET statement_timeout = 15000"))
-        import pandas as pd
-
+    seconds = float(cfg("EKOS_AI_QUERY_TIMEOUT", deadline.DEFAULT_SECONDS) or deadline.DEFAULT_SECONDS)
+    with database.get_sqla_engine(schema=sch) as engine, engine.connect() as conn, \
+            deadline.query_deadline(conn, seconds):
         return pd.read_sql_query(text(sql), conn).head(rows)
 
 
@@ -383,7 +397,7 @@ def _generated_directly(client, question: str, allowed: set[str], max_rows: int)
         return plain, None
     sql = str(result.get("sql"))
     try:
-        used = guard.tables_in(sql, dialect=_SQLGLOT.get(_dialect(), _dialect()))
+        used = guard.tables_in(sql, dialect=_sqlglot_dialect())
     except guard.Refused as err:
         return {"status": "refused", "sql": sql[:2000], "explanation": str(err)}, None
     outside = sorted(used - allowed)
@@ -510,7 +524,7 @@ def text_to_dashboard(question: str) -> dict:
                         "ekos": knowledge.grounding(ctx.catalog, checked.tables, report)}
             frame = _run(database, sch, checked.sql, 5)
             columns = [str(c) for c in frame.columns]
-            planner.form_data(spec, columns, 0)  # vocabulary and columns, before anything is created
+            planner.form_data(spec, columns, 0, _sqlglot_dialect())  # vocabulary and columns, before anything is created
             if len(frame) == 0:
                 warned.append(f"Chart {number}: {_empty_note(database, sch, checked.sql)}")
         except (guard.Refused, planner.BadSpec) as err:
@@ -533,7 +547,8 @@ def text_to_dashboard(question: str) -> dict:
 
 def _temporal(sql: str, frame) -> set[str]:
     return planner.temporal_columns(
-        sql, [str(c) for c in frame.columns], {str(k): str(v) for k, v in frame.dtypes.items()}
+        sql, [str(c) for c in frame.columns], {str(k): str(v) for k, v in frame.dtypes.items()},
+        _sqlglot_dialect(),
     )
 
 
@@ -563,7 +578,7 @@ def _complete_columns(dataset, columns: list[str], temporal: set[str]) -> int:
 def _empty_note(database, sch: str, sql: str) -> str:
     """Why an answer has no rows, in words: how far the data goes when the query asks about the
     current period, else a plain statement."""
-    probe = planner.latest_value_probe(sql)
+    probe = planner.latest_value_probe(sql, _sqlglot_dialect())
     if probe is not None:
         try:
             latest = _run(database, sch, probe[0], 1)
@@ -595,7 +610,7 @@ def _build(database, sch: str, proposal: dict, prepared: list) -> dict:
             "sql": checked.sql, "owners": owner,
         }).run()
         _complete_columns(dataset, columns, meta[0] if meta else set())
-        viz, params = planner.form_data(spec, columns, dataset.id)
+        viz, params = planner.form_data(spec, columns, dataset.id, _sqlglot_dialect())
         chart = CreateChartCommand({
             "slice_name": name, "datasource_id": dataset.id, "datasource_type": "table",
             "viz_type": viz, "params": json.dumps(params), "owners": owner,
@@ -686,7 +701,7 @@ def _scalar(database, sch: str, sql: str) -> str:
 
 def _read_only(sql: str) -> None:
     """Superset's read-only guard over SQL EKOS compiled (its tables are EKOS's own choice)."""
-    dialect = _SQLGLOT.get(_dialect(), _dialect())
+    dialect = _sqlglot_dialect()
     guard.check_sql(sql, {t: [] for t in guard.tables_in(sql, dialect=dialect)}, dialect=dialect)
 
 
@@ -753,7 +768,7 @@ def terms_dashboard(question: str) -> dict:
             p = c["presentation"]
             draw = {"name": p.get("title"), "viz": p.get("viz"), "x": p.get("x"),
                     "group_by": p.get("group_by"), "metric": p.get("metric"), "agg": "sum", "sql": c["sql"]}
-            planner.form_data(draw, columns, 0)
+            planner.form_data(draw, columns, 0, _sqlglot_dialect())
         except (guard.Refused, planner.BadSpec) as err:
             return {"status": "refused", "explanation": f"Chart {number}: {err}"}
         except ekos_mcp.EkosUnavailable:

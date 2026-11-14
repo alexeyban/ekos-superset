@@ -18,6 +18,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import re
 import time
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -25,6 +26,8 @@ from urllib.parse import urlsplit
 import requests
 
 PROTOCOL_VERSION = "2025-06-18"
+# EKOS's answer for a dialect it has no parser for (`sql_check.rs::parser_for`).
+_UNKNOWN_DIALECT = re.compile(r'unknown dialect ("[^"]*"|\S+)')
 _ARGS_SHOWN = 300
 
 
@@ -253,6 +256,17 @@ class EkosClient:
         if result.get("isError"):
             entry.update(ok=False, error=text[:300] or "error")
             self.log.changed()
+            unknown = _UNKNOWN_DIALECT.search(text)
+            if unknown:
+                # An EKOS older than the dialect (DuckDB needs EKOS 1.6.0+): a clear error, never
+                # a check that passed.
+                raise EkosUnavailable(f"EKOS does not know the SQL dialect {unknown.group(1)}.", {
+                    "step": entry["step"], "endpoint": self.endpoint, "cause": text[:300],
+                    "hint": "This EKOS is older than the dialect EKOS_AI_DIALECT names (duckdb "
+                            "needs EKOS 1.6.0 or later). Upgrade EKOS, or set EKOS_AI_DIALECT to "
+                            "one of the dialects it lists.",
+                    "elapsed_ms": entry.get("ms"),
+                })
             raise EkosUnavailable(f"EKOS could not answer ({tool}).", {
                 "step": entry["step"], "endpoint": self.endpoint, "cause": text[:300] or "error",
                 "hint": "EKOS reported an error for this request.", "elapsed_ms": entry.get("ms"),

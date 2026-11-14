@@ -174,3 +174,16 @@ def test_a_failing_listener_never_stops_the_answer():
     client.log.listener = broken
     assert client.call("ekos_status") == {"ok": 1}
     assert client.log.listener is None and len(client.log) == 2
+
+
+def test_an_unknown_dialect_is_a_clear_error_not_a_pass():
+    # EKOS before 1.6.0 has no `duckdb` parser: `ekos_sql_check` answers isError.
+    text = 'unknown dialect "duckdb"; known: clickhouse, generic, oracle, postgres, trino'
+    post = FakePost(lambda m: Resp({"jsonrpc": "2.0", "id": 1, "result": {
+        "content": [{"type": "text", "text": text}], "isError": True}}))
+    client = EkosClient("http://ekos/mcp", post=post)
+    with pytest.raises(EkosUnavailable) as err:
+        client.call("ekos_sql_check", {"sql": "select 1", "dialect": "duckdb"})
+    assert 'does not know the SQL dialect "duckdb"' in str(err.value)
+    assert "1.6.0" in err.value.detail["hint"] and "known: clickhouse" in err.value.detail["cause"]
+    assert client.log[-1]["ok"] is False

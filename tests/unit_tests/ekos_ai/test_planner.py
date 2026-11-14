@@ -85,3 +85,23 @@ def test_a_query_about_the_current_period_gets_a_latest_value_probe():
     assert probe == "SELECT MAX(datetrx) FROM adempiere.c_payment" and column == "c_payment.datetrx"
     assert latest_value_probe("SELECT * FROM c_payment WHERE payamt > 10") is None
     assert latest_value_probe("SELECT * FROM a JOIN b ON a.id = b.id WHERE a.d >= CURRENT_DATE") is None
+
+
+def test_duckdb_sql_is_read_with_the_duckdb_dialect():
+    # EKOS RFC 0259 S2: the guard returns DuckDB SQL (FROM-first, GROUP BY ALL); the planner reads
+    # it with the dialect it was written in.
+    from superset.ekos_ai.planner import (
+        _aggregates,
+        latest_value_probe,
+        temporal_columns,
+    )
+
+    sql = "FROM sales SELECT region, count(*) AS n WHERE sold_at >= CURRENT_DATE GROUP BY ALL"
+    probe, column = latest_value_probe(sql, "duckdb")
+    assert probe == "SELECT MAX(sold_at) FROM sales" and column == "sales.sold_at"
+    assert _aggregates(sql, "duckdb")
+    month = "FROM sales SELECT date_trunc('month', sold_at) AS month, sum(amount) AS total GROUP BY ALL"
+    assert temporal_columns(month, ["month", "total"], {}, "duckdb") == {"month"}
+    _, params = form_data({"viz": "bar", "x": "region", "agg": "count", "sql": sql}, ["region", "n"], 1,
+                          "duckdb")
+    assert params["metrics"][0]["aggregate"] == "SUM" and params["metrics"][0]["column"]["column_name"] == "n"

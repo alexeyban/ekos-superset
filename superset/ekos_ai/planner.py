@@ -43,10 +43,10 @@ def _column(spec: dict, key: str, columns: list[str], *, required: bool) -> str 
     return found
 
 
-def _aggregates(sql: str) -> bool:
+def _aggregates(sql: str, dialect: str = "postgres") -> bool:
     """Whether the query groups at its top level (its rows are already totals)."""
     try:
-        root = sqlglot.parse_one(sql or "", read="postgres")
+        root = sqlglot.parse_one(sql or "", read=dialect)
     except sqlglot.errors.ParseError:
         return False
     return isinstance(root, exp.Select) and root.args.get("group") is not None
@@ -61,20 +61,21 @@ _TEMPORAL = {
 }
 
 
-def _select(sql: str):
+def _select(sql: str, dialect: str = "postgres"):
     try:
-        root = sqlglot.parse_one(sql or "", read="postgres")
+        root = sqlglot.parse_one(sql or "", read=dialect)
     except sqlglot.errors.ParseError:
         return None
     return root if isinstance(root, exp.Select) else None
 
 
-def temporal_columns(sql: str, columns: list[str], dtypes: dict[str, str]) -> set[str]:
+def temporal_columns(sql: str, columns: list[str], dtypes: dict[str, str],
+                     dialect: str = "postgres") -> set[str]:
     """The output columns that hold dates: a datetime type in the result, or a projection that
     casts to a date/timestamp or truncates one. A dataset Superset could not read columns for (a
     query with no rows yet) needs this to draw a time axis."""
     out = {c for c in columns if "datetime" in str(dtypes.get(c, "")).lower()}
-    root = _select(sql)
+    root = _select(sql, dialect)
     if root is None:
         return out
     by_lower = {c.lower(): c for c in columns}
@@ -92,12 +93,12 @@ def temporal_columns(sql: str, columns: list[str], dtypes: dict[str, str]) -> se
 _NOW = (exp.CurrentDate, exp.CurrentTimestamp, exp.CurrentDatetime)
 
 
-def latest_value_probe(sql: str) -> tuple[str, str] | None:
+def latest_value_probe(sql: str, dialect: str = "postgres") -> tuple[str, str] | None:
     """For a query that compares a column with the current date (`>= DATE_TRUNC('YEAR',
     CURRENT_DATE)`), the query that tells how far the data goes: `SELECT MAX(col) FROM table`
     over its one table, and the column's name. `None` when there is no such comparison or more
     than one table. Built from the parsed identifiers, never from text."""
-    root = _select(sql)
+    root = _select(sql, dialect)
     if root is None:
         return None
     tables = list(root.find_all(exp.Table))
@@ -111,11 +112,12 @@ def latest_value_probe(sql: str) -> tuple[str, str] | None:
             probe = exp.select(exp.Max(this=exp.column(column.name))).from_(
                 exp.table_(table.name, db=table.db or None)
             )
-            return probe.sql(dialect="postgres"), f"{table.name}.{column.name}"
+            return probe.sql(dialect=dialect), f"{table.name}.{column.name}"
     return None
 
 
-def form_data(spec: dict, columns: list[str], dataset_id: int) -> tuple[str, dict]:
+def form_data(spec: dict, columns: list[str], dataset_id: int,
+              dialect: str = "postgres") -> tuple[str, dict]:
     """The viz type and params of one chart; raises BadSpec for anything not in the vocabulary."""
     viz = VIZ.get(str(spec.get("viz", "")).lower())
     if viz is None:
@@ -128,7 +130,7 @@ def form_data(spec: dict, columns: list[str], dataset_id: int) -> tuple[str, dic
     if kind == "table":
         return viz, {**base, "query_mode": "raw", "all_columns": columns[:20], "row_limit": 200}
     metric_col = _column(spec, "metric", columns, required=agg != "COUNT")
-    if metric_col is None and agg == "COUNT" and _aggregates(str(spec.get("sql", ""))):
+    if metric_col is None and agg == "COUNT" and _aggregates(str(spec.get("sql", "")), dialect):
         # The SQL already counted (one row per group): counting its rows would draw 1 for every
         # group. Its one value column is the measure.
         keys = {str(spec.get(k, "")).lower() for k in ("x", "group_by")}
